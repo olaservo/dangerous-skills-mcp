@@ -219,6 +219,17 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     oracle:
       'Host MUST bound the raw size of a fetched resource BEFORE fully reading and base64-decoding (and hashing) it. The index is size-capped before parse; the artifact fetch (SKILL.md, archive blob, supporting file) MUST be too — honoring the advertised Resource.size and capping the read regardless — or a multi-GB payload exhausts host memory at install time. (Research: PR #831 follow-up; not yet in the SEP.)',
   },
+  {
+    key: 'adv-walk-budget',
+    summary:
+      'two url-only skills from one server, each dragging ~32 MiB of undigested supporting files (~64 MiB aggregate) via the directory walk',
+    sepClause:
+      'Archives §"Unpacking" (Den C1, extended): the cumulative per-server size budget must cover the url+supporting-files directory-walk path, not only archives — surfaced in the PR #831 hardening follow-up',
+    denItem: 'C1',
+    expectedAction: 'reject',
+    oracle:
+      "Host MUST apply its cumulative per-server unpack budget to walk-fetched supporting files too, not only archive bytes: each file here is under a sane per-file cap, but several url-only skills from one server cumulatively exceed the budget. A budget enforced only in the archive extractor leaves this (arguably more unbounded) path open. (Research: PR #831 follow-up; not yet in the SEP.)",
+  },
 ];
 
 const byKey = new Map(ADVERSARIAL_CASES.map((c) => [c.key, c]));

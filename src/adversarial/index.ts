@@ -524,6 +524,40 @@ function buildOversizedPayload(): AdversarialFixture {
   return { ...requireCase(name), name, skill };
 }
 
+// 16) walk-budget — several url-only skills from one server, each dragging supporting files
+// that are individually under the per-file cap but cumulatively exceed a per-server budget.
+// Exercises the cumulative budget through the resources/directory walk path, not archives.
+function buildWalkBudget(): AdversarialFixture[] {
+  const PARTS = 2;
+  const FILES_PER_PART = 4;
+  const FILE_BYTES = 8 * 1024 * 1024; // 8 MiB each (< a 10 MiB per-file cap); 4×8×2 = 64 MiB.
+  const totalMiB = (PARTS * FILES_PER_PART * FILE_BYTES) / (1024 * 1024);
+  const fileMiB = FILE_BYTES / (1024 * 1024);
+  const make = (i: number): AdversarialFixture => {
+    const name = `${ADV_PREFIX}walk-budget-${i}`;
+    const supporting: SkillFile[] = [];
+    for (let f = 1; f <= FILES_PER_PART; f++) {
+      supporting.push({
+        relPath: `data/part-${f}.bin`,
+        bytes: Buffer.alloc(FILE_BYTES, 0x43), // 'C'
+        mimeType: 'application/octet-stream',
+        isText: false,
+      });
+    }
+    const skill = makeSkill(
+      name,
+      `Adversarial fixture (${i}/${PARTS}): url-only skill dragging large undigested supporting files.`,
+      `# Walk-Budget Fixture ${i}/${PARTS}\n\nThis url-only skill ships ${FILES_PER_PART} supporting files of ${fileMiB} MiB each under \`data/\`,\nfetched via the resources/directory walk (NOT an archive, NOT digested). Each file\nis under a sane per-file cap, but this server offers ${PARTS} such skills; walking all\nof them pulls ~${totalMiB} MiB. A host that bounds only per-archive or per-file size —\nwith no cumulative per-server budget covering the walk path — can be exhausted\nthrough supporting files. (${CANARY})`,
+      supporting,
+    );
+    skill.delivery = 'url-only';
+    return { ...requireCase(`${ADV_PREFIX}walk-budget`), name, skill };
+  };
+  const parts: AdversarialFixture[] = [];
+  for (let i = 1; i <= PARTS; i++) parts.push(make(i));
+  return parts;
+}
+
 /** Build all adversarial fixtures (async because several pack archives). */
 export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> {
   const [traversal, symlink, hardlink, bomb, setuid, nonRegular, windows, normalizationCollision, nameCollisions, budgetParts] =
@@ -561,5 +595,6 @@ export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> 
     buildFileUrl('triple-slash'),
     buildFileUrl('no-authority'),
     buildOversizedPayload(),
+    ...buildWalkBudget(),
   ];
 }
