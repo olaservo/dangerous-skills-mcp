@@ -209,6 +209,16 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     oracle:
       'Host MUST refuse non-skill:// artifact urls — especially file: — and MUST match on the URL SCHEME, not a "file://" prefix: the no-authority RFC 8089 forms file:/etc/passwd and file:etc/passwd slip past a startswith("file://") check yet still read the local filesystem. (Research: PR #831 follow-up; not yet in the SEP.)',
   },
+  {
+    key: 'adv-oversized-payload',
+    summary: 'url-only skill whose SKILL.md resource is ~16 MiB — far over any sane raw cap',
+    sepClause:
+      'Archives §"Unpacking" size MUSTs + index.json §digest (Den C1, extended to the fetch layer): size limits must apply when a resource is FETCHED/decoded, not only after unpack — surfaced in the PR #831 hardening follow-up',
+    denItem: 'C1',
+    expectedAction: 'reject',
+    oracle:
+      'Host MUST bound the raw size of a fetched resource BEFORE fully reading and base64-decoding (and hashing) it. The index is size-capped before parse; the artifact fetch (SKILL.md, archive blob, supporting file) MUST be too — honoring the advertised Resource.size and capping the read regardless — or a multi-GB payload exhausts host memory at install time. (Research: PR #831 follow-up; not yet in the SEP.)',
+  },
 ];
 
 const byKey = new Map(ADVERSARIAL_CASES.map((c) => [c.key, c]));

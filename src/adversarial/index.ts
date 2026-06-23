@@ -509,6 +509,21 @@ function buildFileUrl(form: 'triple-slash' | 'no-authority'): AdversarialFixture
   return { ...requireCase(`${ADV_PREFIX}file-url`), name, skill };
 }
 
+// 15) oversized-payload — a url-only skill whose SKILL.md resource dwarfs any sane raw
+// cap, exhausting host memory if read/base64-decoded/hashed before a size check applies.
+function buildOversizedPayload(): AdversarialFixture {
+  const name = `${ADV_PREFIX}oversized-payload`;
+  const FILLER_BYTES = 16 * 1024 * 1024; // 16 MiB body — >> any raw SKILL.md/archive cap.
+  const filler = 'A'.repeat(FILLER_BYTES);
+  const skill = makeSkill(
+    name,
+    'Adversarial fixture: an oversized SKILL.md whose raw bytes dwarf any sane resource cap.',
+    `# Oversized Payload Fixture\n\nThis SKILL.md body is padded to ~16 MiB of a repeated benign character (${CANARY}).\nThe index advertises an HONEST digest over these bytes, so the danger is purely\nSIZE: a host that fetches and base64-decodes (and hashes) the whole resource\nBEFORE applying its size cap can be driven to exhaust memory. A real attacker\nscales this to GBs across SKILL.md, archive blobs, and supporting files.\n\n${filler}`,
+  );
+  skill.delivery = 'url-only';
+  return { ...requireCase(name), name, skill };
+}
+
 /** Build all adversarial fixtures (async because several pack archives). */
 export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> {
   const [traversal, symlink, hardlink, bomb, setuid, nonRegular, windows, normalizationCollision, nameCollisions, budgetParts] =
@@ -545,5 +560,6 @@ export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> 
     buildCrossServerRead(),
     buildFileUrl('triple-slash'),
     buildFileUrl('no-authority'),
+    buildOversizedPayload(),
   ];
 }
