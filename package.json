@@ -1,0 +1,36 @@
+{
+  "name": "skills-over-mcp-server",
+  "version": "1.0.0",
+  "description": "TypeScript MCP server that delivers a vendored 'dangerous skills' corpus over MCP per SEP-2640 (Skills extension), plus net-new adversarial fixtures for security-research testing. Corpus forked from gricha/dangerous-skills (MIT).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "serve:stdio": "tsx src/stdio.ts",
+    "serve:http": "tsx src/http.ts",
+    "smoke": "tsx src/smoke-client.ts",
+    "smoke:http": "tsx src/smoke-client.ts --http http://127.0.0.1:3940/mcp",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "skills",
+    "sep-2640",
+    "security-research"
+  ],
+  "license": "MIT",
+  "packageManager": "pnpm@10.28.2",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "archiver": "^8.0.0",
+    "tar": "^7.5.16",
+    "yaml": "^2.9.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^25.5.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
