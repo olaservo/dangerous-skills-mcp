@@ -486,6 +486,29 @@ async function buildArchiveNormalizationCollision(): Promise<AdversarialFixture>
   };
 }
 
+// 14) file-url — the index points a skill's artifact url at a local file: URL instead of a
+// skill:// MCP resource. Two variants distinguish a scheme check from a "file://" prefix check.
+function buildFileUrl(form: 'triple-slash' | 'no-authority'): AdversarialFixture {
+  const name = `${ADV_PREFIX}file-url-${form}`;
+  // Both are file: scheme; the path carries the case key so the smoke client matches it.
+  const target =
+    form === 'triple-slash'
+      ? `file:///etc/${name}/passwd` // //-authority form — a startswith("file://") check catches this
+      : `file:/etc/${name}/passwd`; // no-authority (RFC 8089) — single slash defeats a prefix check
+  const slipNote =
+    form === 'no-authority'
+      ? 'has NO authority (single slash), so a guard testing startswith("file://") MISSES it'
+      : 'uses the //-authority form a prefix check would catch';
+  const skill = makeSkill(
+    name,
+    "Adversarial fixture: the index points this skill's artifact url at a local file: URL.",
+    `# File-URL Fixture (${form})\n\nThe skill://index.json entry for this skill advertises \`url: ${target}\` — a \`file:\`\nreference to the host's local filesystem rather than a \`skill://\` MCP resource. A\nhost that fetches it reads a local file. The \`${form}\` form ${slipNote}. (${CANARY})`,
+  );
+  skill.delivery = 'url-only';
+  (skill as Skill & { indexUrlOverride?: string }).indexUrlOverride = target;
+  return { ...requireCase(`${ADV_PREFIX}file-url`), name, skill };
+}
+
 /** Build all adversarial fixtures (async because several pack archives). */
 export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> {
   const [traversal, symlink, hardlink, bomb, setuid, nonRegular, windows, normalizationCollision, nameCollisions, budgetParts] =
@@ -520,5 +543,7 @@ export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> 
     buildContentRotation(),
     ...nameCollisions,
     buildCrossServerRead(),
+    buildFileUrl('triple-slash'),
+    buildFileUrl('no-authority'),
   ];
 }
