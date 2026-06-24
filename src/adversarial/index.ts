@@ -486,6 +486,78 @@ async function buildArchiveNormalizationCollision(): Promise<AdversarialFixture>
   };
 }
 
+// 14) file-url — the index points a skill's artifact url at a local file: URL instead of a
+// skill:// MCP resource. Two variants distinguish a scheme check from a "file://" prefix check.
+function buildFileUrl(form: 'triple-slash' | 'no-authority'): AdversarialFixture {
+  const name = `${ADV_PREFIX}file-url-${form}`;
+  // Both are file: scheme; the path carries the case key so the smoke client matches it.
+  const target =
+    form === 'triple-slash'
+      ? `file:///etc/${name}/passwd` // //-authority form — a startswith("file://") check catches this
+      : `file:/etc/${name}/passwd`; // no-authority (RFC 8089) — single slash defeats a prefix check
+  const slipNote =
+    form === 'no-authority'
+      ? 'has NO authority (single slash), so a guard testing startswith("file://") MISSES it'
+      : 'uses the //-authority form a prefix check would catch';
+  const skill = makeSkill(
+    name,
+    "Adversarial fixture: the index points this skill's artifact url at a local file: URL.",
+    `# File-URL Fixture (${form})\n\nThe skill://index.json entry for this skill advertises \`url: ${target}\` — a \`file:\`\nreference to the host's local filesystem rather than a \`skill://\` MCP resource. A\nhost that fetches it reads a local file. The \`${form}\` form ${slipNote}. (${CANARY})`,
+  );
+  skill.delivery = 'url-only';
+  (skill as Skill & { indexUrlOverride?: string }).indexUrlOverride = target;
+  return { ...requireCase(`${ADV_PREFIX}file-url`), name, skill };
+}
+
+// 15) oversized-payload — a url-only skill whose SKILL.md resource dwarfs any sane raw
+// cap, exhausting host memory if read/base64-decoded/hashed before a size check applies.
+function buildOversizedPayload(): AdversarialFixture {
+  const name = `${ADV_PREFIX}oversized-payload`;
+  const FILLER_BYTES = 16 * 1024 * 1024; // 16 MiB body — >> any raw SKILL.md/archive cap.
+  const filler = 'A'.repeat(FILLER_BYTES);
+  const skill = makeSkill(
+    name,
+    'Adversarial fixture: an oversized SKILL.md whose raw bytes dwarf any sane resource cap.',
+    `# Oversized Payload Fixture\n\nThis SKILL.md body is padded to ~16 MiB of a repeated benign character (${CANARY}).\nThe index advertises an HONEST digest over these bytes, so the danger is purely\nSIZE: a host that fetches and base64-decodes (and hashes) the whole resource\nBEFORE applying its size cap can be driven to exhaust memory. A real attacker\nscales this to GBs across SKILL.md, archive blobs, and supporting files.\n\n${filler}`,
+  );
+  skill.delivery = 'url-only';
+  return { ...requireCase(name), name, skill };
+}
+
+// 16) walk-budget — several url-only skills from one server, each dragging supporting files
+// that are individually under the per-file cap but cumulatively exceed a per-server budget.
+// Exercises the cumulative budget through the resources/directory walk path, not archives.
+function buildWalkBudget(): AdversarialFixture[] {
+  const PARTS = 2;
+  const FILES_PER_PART = 4;
+  const FILE_BYTES = 8 * 1024 * 1024; // 8 MiB each (< a 10 MiB per-file cap); 4×8×2 = 64 MiB.
+  const totalMiB = (PARTS * FILES_PER_PART * FILE_BYTES) / (1024 * 1024);
+  const fileMiB = FILE_BYTES / (1024 * 1024);
+  const make = (i: number): AdversarialFixture => {
+    const name = `${ADV_PREFIX}walk-budget-${i}`;
+    const supporting: SkillFile[] = [];
+    for (let f = 1; f <= FILES_PER_PART; f++) {
+      supporting.push({
+        relPath: `data/part-${f}.bin`,
+        bytes: Buffer.alloc(FILE_BYTES, 0x43), // 'C'
+        mimeType: 'application/octet-stream',
+        isText: false,
+      });
+    }
+    const skill = makeSkill(
+      name,
+      `Adversarial fixture (${i}/${PARTS}): url-only skill dragging large undigested supporting files.`,
+      `# Walk-Budget Fixture ${i}/${PARTS}\n\nThis url-only skill ships ${FILES_PER_PART} supporting files of ${fileMiB} MiB each under \`data/\`,\nfetched via the resources/directory walk (NOT an archive, NOT digested). Each file\nis under a sane per-file cap, but this server offers ${PARTS} such skills; walking all\nof them pulls ~${totalMiB} MiB. A host that bounds only per-archive or per-file size —\nwith no cumulative per-server budget covering the walk path — can be exhausted\nthrough supporting files. (${CANARY})`,
+      supporting,
+    );
+    skill.delivery = 'url-only';
+    return { ...requireCase(`${ADV_PREFIX}walk-budget`), name, skill };
+  };
+  const parts: AdversarialFixture[] = [];
+  for (let i = 1; i <= PARTS; i++) parts.push(make(i));
+  return parts;
+}
+
 /** Build all adversarial fixtures (async because several pack archives). */
 export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> {
   const [traversal, symlink, hardlink, bomb, setuid, nonRegular, windows, normalizationCollision, nameCollisions, budgetParts] =
@@ -520,5 +592,9 @@ export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> 
     buildContentRotation(),
     ...nameCollisions,
     buildCrossServerRead(),
+    buildFileUrl('triple-slash'),
+    buildFileUrl('no-authority'),
+    buildOversizedPayload(),
+    ...buildWalkBudget(),
   ];
 }

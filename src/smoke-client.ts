@@ -281,7 +281,14 @@ async function runAdversarialReport(client: Client): Promise<void> {
     // fixture (so its read counter stays clean for the live demo below) and
     // archive-only entries (no individually-addressable url).
     const first = matches[0];
-    if (first.url && !first.url.includes('adv-content-rotation')) {
+    // Skip heavy/stateful fetches: content-rotation (keep its read counter clean for
+    // the live demo below) and oversized-payload (don't pull ~16 MiB just to prove it
+    // is served — its size is visible in resources/list).
+    if (
+      first.url &&
+      !first.url.includes('adv-content-rotation') &&
+      !first.url.includes('adv-oversized-payload')
+    ) {
       try {
         await readBytes(client, first.url);
       } catch {

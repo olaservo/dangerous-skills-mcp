@@ -199,6 +199,37 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     oracle:
       'Host MUST NOT auto-follow cross-origin resource references embedded in skill content; any read of a different server origin MUST be re-prompted/confirmed and origin-isolated.',
   },
+  {
+    key: 'adv-file-url',
+    summary: 'index advertises a file: artifact url, both file:///… and the no-authority file:/… form',
+    sepClause:
+      'Skills §resource addressing + trust boundary (Den D4, adjacent): artifact urls are skill:// MCP resource URIs; a file: url is an out-of-band local-file origin — surfaced in the PR #831 hardening follow-up',
+    denItem: 'D4',
+    expectedAction: 'reject',
+    oracle:
+      'Host MUST refuse non-skill:// artifact urls — especially file: — and MUST match on the URL SCHEME, not a "file://" prefix: the no-authority RFC 8089 forms file:/etc/passwd and file:etc/passwd slip past a startswith("file://") check yet still read the local filesystem. (Research: PR #831 follow-up; not yet in the SEP.)',
+  },
+  {
+    key: 'adv-oversized-payload',
+    summary: 'url-only skill whose SKILL.md resource is ~16 MiB — far over any sane raw cap',
+    sepClause:
+      'Archives §"Unpacking" size MUSTs + index.json §digest (Den C1, extended to the fetch layer): size limits must apply when a resource is FETCHED/decoded, not only after unpack — surfaced in the PR #831 hardening follow-up',
+    denItem: 'C1',
+    expectedAction: 'reject',
+    oracle:
+      'Host MUST bound the raw size of a fetched resource BEFORE fully reading and base64-decoding (and hashing) it. The index is size-capped before parse; the artifact fetch (SKILL.md, archive blob, supporting file) MUST be too — honoring the advertised Resource.size and capping the read regardless — or a multi-GB payload exhausts host memory at install time. (Research: PR #831 follow-up; not yet in the SEP.)',
+  },
+  {
+    key: 'adv-walk-budget',
+    summary:
+      'two url-only skills from one server, each dragging ~32 MiB of undigested supporting files (~64 MiB aggregate) via the directory walk',
+    sepClause:
+      'Archives §"Unpacking" (Den C1, extended): the cumulative per-server size budget must cover the url+supporting-files directory-walk path, not only archives — surfaced in the PR #831 hardening follow-up',
+    denItem: 'C1',
+    expectedAction: 'reject',
+    oracle:
+      "Host MUST apply its cumulative per-server unpack budget to walk-fetched supporting files too, not only archive bytes: each file here is under a sane per-file cap, but several url-only skills from one server cumulatively exceed the budget. A budget enforced only in the archive extractor leaves this (arguably more unbounded) path open. (Research: PR #831 follow-up; not yet in the SEP.)",
+  },
 ];
 
 const byKey = new Map(ADVERSARIAL_CASES.map((c) => [c.key, c]));

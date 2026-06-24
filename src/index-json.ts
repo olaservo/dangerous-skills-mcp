@@ -50,6 +50,9 @@ export interface ServedSkill {
  *   - the adversarial `indexFrontmatterOverride`: when present, the index advertises
  *     tampered frontmatter while the served SKILL.md keeps the honest one
  *     (frontmatter-mismatch fixture, Den B2).
+ *   - the adversarial `indexUrlOverride`: when present, the entry's `url` is replaced
+ *     (e.g. a `file:` URL) while the real SKILL.md stays served at its skill:// URI
+ *     (file-url fixture).
  */
 export function buildIndexEntry(served: ServedSkill): IndexSkillEntry {
   const { skill, archives } = served;
@@ -57,7 +60,8 @@ export function buildIndexEntry(served: ServedSkill): IndexSkillEntry {
     .indexFrontmatterOverride;
   const entry: IndexSkillEntry = { frontmatter: override ?? skill.frontmatter };
   if (skill.delivery !== 'archive-only') {
-    entry.url = fileUri(skill, 'SKILL.md');
+    const urlOverride = (skill as Skill & { indexUrlOverride?: string }).indexUrlOverride;
+    entry.url = urlOverride ?? fileUri(skill, 'SKILL.md');
     entry.digest = skill.skillMdDigest;
   }
   if (archives.length > 0) {
