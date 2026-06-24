@@ -87,12 +87,13 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   },
   {
     key: 'adv-cumulative-budget',
-    summary: 'two ~30 MiB archives from one server (~60 MiB aggregate, over a 50 MiB budget)',
+    summary:
+      'five ~45 MiB compressible archives from one server (~225 MiB unpacked aggregate, KB on the wire, over a 200 MiB budget)',
     sepClause: 'Archives §"Unpacking" (Den-proposed expansion): per-archive AND cumulative per-server size limits',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
-      "Host MUST enforce a cumulative per-server unpack budget, not just per-archive: once the server's budget is spent, further unpacking (e.g. the 2nd of several ~30 MiB skills from one server) MUST be refused. (Den-proposed; not yet in the SEP.)",
+      "Host MUST enforce a cumulative per-server unpack budget, not just per-archive: once the server's budget is spent, further unpacking (e.g. the 5th of several ~45 MiB skills from one server) MUST be refused. (Den-proposed; not yet in the SEP.)",
   },
   {
     key: 'adv-archive-windows-paths',
@@ -222,7 +223,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-walk-budget',
     summary:
-      'two url-only skills from one server, each dragging ~32 MiB of undigested supporting files (~64 MiB aggregate) via the directory walk',
+      'a url-only skill dragging ~27 MiB of undigested supporting files via the directory walk, on a server whose archives have already neared the per-server budget',
     sepClause:
       'Archives §"Unpacking" (Den C1, extended): the cumulative per-server size budget must cover the url+supporting-files directory-walk path, not only archives — surfaced in the PR #831 hardening follow-up',
     denItem: 'C1',

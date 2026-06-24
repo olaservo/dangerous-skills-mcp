@@ -207,16 +207,18 @@ async function buildArchiveNonRegular(): Promise<AdversarialFixture> {
 // 3e) cumulative-budget — a family of moderate archives that individually pass a
 // per-archive bound but, in aggregate from one server, exceed a per-server budget.
 async function buildCumulativeBudget(): Promise<AdversarialFixture[]> {
-  const PART_BYTES = 30 * 1024 * 1024; // 30 MiB each; 2 parts = 60 MiB aggregate (> 50 MiB).
-  const PARTS = 2;
+  const PART_BYTES = 45 * 1024 * 1024; // 45 MiB each (< 50 MiB per-archive cap), highly compressible.
+  const PARTS = 5; // 5 × 45 = 225 MiB unpacked aggregate — over a 200 MiB per-server budget.
+  const partMiB = PART_BYTES / (1024 * 1024);
+  const aggMiB = (PARTS * PART_BYTES) / (1024 * 1024);
   const make = async (i: number): Promise<AdversarialFixture> => {
     const name = `${ADV_PREFIX}cumulative-budget-${i}`;
     const skill = makeSkill(
       name,
       `Adversarial fixture (${i}/${PARTS}): one of several moderate archives from one server.`,
-      `# Cumulative Budget Fixture ${i}/${PARTS}\n\nThis archive (\`skill://${name}.tar.gz\`) unpacks to ~30 MiB — comfortably under\nany sane per-archive bound. But this server offers ${PARTS} such skills; unpacking\nall of them spends ~60 MiB (over a 50 MiB budget). A host that bounds only\nper-archive size, with no cumulative per-server budget, can be exhausted by many\nindividually-fine skills. (${CANARY})`,
+      `# Cumulative Budget Fixture ${i}/${PARTS}\n\nThis archive (\`skill://${name}.tar.gz\`) unpacks to ~${partMiB} MiB — under any sane\nper-archive bound — yet is only KB on the wire (a compressible run of one byte).\nThis server offers ${PARTS} such skills; unpacking all of them spends ~${aggMiB} MiB.\nA host that bounds only per-archive size, with no cumulative per-server budget,\ncan be exhausted by many individually-fine skills. (${CANARY})`,
     );
-    const filler = Buffer.alloc(PART_BYTES, 0x42); // 'B' * 30 MiB, highly compressible
+    const filler = Buffer.alloc(PART_BYTES, 0x42); // 'B' * 45 MiB — compresses to ~KB on the wire.
     const tarBytes = await writeRawTarGz([
       { name: 'SKILL.md', body: skill.files[0].bytes },
       { name: 'data.bin', body: filler },
@@ -524,38 +526,33 @@ function buildOversizedPayload(): AdversarialFixture {
   return { ...requireCase(name), name, skill };
 }
 
-// 16) walk-budget — several url-only skills from one server, each dragging supporting files
-// that are individually under the per-file cap but cumulatively exceed a per-server budget.
-// Exercises the cumulative budget through the resources/directory walk path, not archives.
-function buildWalkBudget(): AdversarialFixture[] {
-  const PARTS = 2;
-  const FILES_PER_PART = 4;
-  const FILE_BYTES = 8 * 1024 * 1024; // 8 MiB each (< a 10 MiB per-file cap); 4×8×2 = 64 MiB.
-  const totalMiB = (PARTS * FILES_PER_PART * FILE_BYTES) / (1024 * 1024);
+// 16) walk-budget — a url-only skill dragging undigested supporting files via the directory
+// walk. On a server whose archives have already neared the per-server budget, the SHARED
+// cumulative budget must refuse this walk too — not only the archive path. (The conformance
+// driver pre-fills the budget with the cumulative-budget archives, then installs this skill.)
+function buildWalkBudget(): AdversarialFixture {
+  const FILES = 3;
+  const FILE_BYTES = 9 * 1024 * 1024; // 9 MiB each (< 10 MiB per-file cap); 3 × 9 = 27 MiB.
   const fileMiB = FILE_BYTES / (1024 * 1024);
-  const make = (i: number): AdversarialFixture => {
-    const name = `${ADV_PREFIX}walk-budget-${i}`;
-    const supporting: SkillFile[] = [];
-    for (let f = 1; f <= FILES_PER_PART; f++) {
-      supporting.push({
-        relPath: `data/part-${f}.bin`,
-        bytes: Buffer.alloc(FILE_BYTES, 0x43), // 'C'
-        mimeType: 'application/octet-stream',
-        isText: false,
-      });
-    }
-    const skill = makeSkill(
-      name,
-      `Adversarial fixture (${i}/${PARTS}): url-only skill dragging large undigested supporting files.`,
-      `# Walk-Budget Fixture ${i}/${PARTS}\n\nThis url-only skill ships ${FILES_PER_PART} supporting files of ${fileMiB} MiB each under \`data/\`,\nfetched via the resources/directory walk (NOT an archive, NOT digested). Each file\nis under a sane per-file cap, but this server offers ${PARTS} such skills; walking all\nof them pulls ~${totalMiB} MiB. A host that bounds only per-archive or per-file size —\nwith no cumulative per-server budget covering the walk path — can be exhausted\nthrough supporting files. (${CANARY})`,
-      supporting,
-    );
-    skill.delivery = 'url-only';
-    return { ...requireCase(`${ADV_PREFIX}walk-budget`), name, skill };
-  };
-  const parts: AdversarialFixture[] = [];
-  for (let i = 1; i <= PARTS; i++) parts.push(make(i));
-  return parts;
+  const totalMiB = (FILES * FILE_BYTES) / (1024 * 1024);
+  const name = `${ADV_PREFIX}walk-budget`;
+  const supporting: SkillFile[] = [];
+  for (let f = 1; f <= FILES; f++) {
+    supporting.push({
+      relPath: `data/part-${f}.bin`,
+      bytes: Buffer.alloc(FILE_BYTES, 0x43), // 'C'
+      mimeType: 'application/octet-stream',
+      isText: false,
+    });
+  }
+  const skill = makeSkill(
+    name,
+    'Adversarial fixture: url-only skill dragging undigested supporting files via the directory walk.',
+    `# Walk-Budget Fixture\n\nThis url-only skill ships ${FILES} supporting files of ${fileMiB} MiB each (~${totalMiB} MiB) under\n\`data/\`, fetched via the resources/directory walk (NOT an archive, NOT digested).\nEach file is under a sane per-file cap. On a server whose archives have already\nneared the per-server budget, a host that bounds only the archive path — leaving\nthe walk path on its own allowance — can still be exhausted here. The cumulative\nper-server budget MUST cover walk-fetched supporting files too. (${CANARY})`,
+    supporting,
+  );
+  skill.delivery = 'url-only';
+  return { ...requireCase(`${ADV_PREFIX}walk-budget`), name, skill };
 }
 
 /** Build all adversarial fixtures (async because several pack archives). */
@@ -595,6 +592,6 @@ export async function buildAdversarialFixtures(): Promise<AdversarialFixture[]> 
     buildFileUrl('triple-slash'),
     buildFileUrl('no-authority'),
     buildOversizedPayload(),
-    ...buildWalkBudget(),
+    buildWalkBudget(),
   ];
 }
