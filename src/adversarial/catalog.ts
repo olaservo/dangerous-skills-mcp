@@ -231,6 +231,58 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     oracle:
       "Host MUST apply its cumulative per-server unpack budget to walk-fetched supporting files too, not only archive bytes: each file here is under a sane per-file cap, but several url-only skills from one server cumulatively exceed the budget. A budget enforced only in the archive extractor leaves this (arguably more unbounded) path open. (Research: PR #831 follow-up; not yet in the SEP.)",
   },
+
+  // ---------------------------------------------------------------------------
+  // New threats introduced by the current sep/skills-extension revision (index.json
+  // -> skills/list + skills/get, per-file `resources` digests, archives deferred),
+  // tracked in the WG threat model. `denItem` reuses the closest existing bucket for
+  // smoke-client display; the precise, honest attribution lives in `sepClause`. See
+  // docs/reconciliation-plan.md — these entries and the field's semantics are under review.
+  // ---------------------------------------------------------------------------
+  {
+    key: 'adv-nested-consent',
+    summary:
+      'an approved skill bundles a nested SKILL.md (nested-danger/SKILL.md) whose frontmatter declares allowed-tools',
+    sepClause:
+      'Security §"Nested skill consent" (current MUST): approving a skill does not approve skills nested in it; a nested SKILL.md\'s frontmatter MUST NOT be acted on until that nested skill is itself activated under its own approval',
+    denItem: 'D5',
+    expectedAction: 'gate',
+    oracle:
+      "Host MUST treat the nested SKILL.md as an ordinary supporting file: it MUST NOT act on the nested frontmatter (allowed-tools, hooks) on the strength of the enclosing skill's approval. Activating the nested skill requires fresh, explicit per-skill consent. (SEP-current; no prior corpus fixture.)",
+  },
+  {
+    key: 'adv-directory-walk-escape',
+    summary:
+      'resources/directory/read returns a child Resource whose URI resolves outside the skill subtree (or into another origin)',
+    sepClause:
+      'Resources §completeness + Security §"Origin-scoped resource reads": each `resources` URI MUST be within the skill dir; a read of any URI not in the entry\'s `resources` set is a verification failure',
+    denItem: 'D4',
+    expectedAction: 'reject',
+    oracle:
+      'Host MUST NOT treat a directory listing as authorization to read a URI absent from the skill\'s `resources` set: an enumerated child that resolves outside the skill subtree or into a different origin MUST be rejected, not merely gated. resources/directory/read returns metadata only; blindly fetching its children is the escape. (SEP-current; no prior corpus fixture.)',
+  },
+  {
+    key: 'adv-name-collision',
+    summary:
+      "a second origin publishes a skill under a trusted skill's name (another server's or the host's filesystem skill), counting on the host to resolve its way",
+    sepClause:
+      'Security §"Name collisions are an impersonation surface": names are not unique across origins; a skill is identified by its `uri`, not its `name`',
+    denItem: 'D4',
+    expectedAction: 're-prompt',
+    oracle:
+      "Host MUST resolve skill names within a per-origin namespace (servers identified by a host-assigned label, not self-reported serverInfo.name) and MUST NOT let an MCP-origin skill silently shadow, replace, or intercept a same-named skill from any other origin — including the host's own filesystem skills; collisions SHOULD be surfaced to the user. (SEP-current; distinct from the archive-only `refunds` keying bug.)",
+  },
+  {
+    key: 'adv-enumeration-exhaustion',
+    summary:
+      'skills/list (or resources/directory/read) returns an unbounded stream of pages via an endless nextCursor, exhausting the host at discovery time before any file is fetched',
+    sepClause:
+      'Enumeration §pagination (skills/list, resources/directory/read): cursor pagination is defined but neither page count nor total entry count is bounded; ttlMs/cacheScope are freshness hints, not a bound',
+    denItem: 'C1',
+    expectedAction: 'reject',
+    oracle:
+      "Host MUST cap the number of pages (or total entries) it will follow from a single server's enumeration and treat a listing that refuses to terminate as a resource-exhaustion attack; the exhaustion surface begins BEFORE any resource is read. (SEP-current; extends the C1 budget theme to the enumeration layer.)",
+  },
 ];
 
 const byKey = new Map(ADVERSARIAL_CASES.map((c) => [c.key, c]));
