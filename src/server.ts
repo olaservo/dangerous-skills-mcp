@@ -14,6 +14,8 @@ import { ResourceRegistry, type RegistryOptions } from './resources.js';
 
 export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
 export const DIRECTORY_READ_METHOD = 'resources/directory/read';
+export const SKILLS_LIST_METHOD = 'skills/list';
+export const SKILLS_GET_METHOD = 'skills/get';
 
 /**
  * Read-buffer cap for the stdio transport, in bytes.
@@ -61,6 +63,11 @@ export const DirectoryReadResultSchema = z.object({
   nextCursor: z.string().optional(),
 });
 
+/** Params schemas for the custom skills/list and skills/get methods (same 3-arg form). */
+export const SkillsListParamsSchema = z.object({ cursor: z.string().optional() }).optional();
+
+export const SkillsGetParamsSchema = z.object({ uri: z.string() });
+
 export interface BuildServerResult {
   server: Server;
   registry: ResourceRegistry;
@@ -92,15 +99,20 @@ export async function buildServer(
       },
       instructions:
         'Serves the dangerous-skills corpus (MIT, gricha) as skill:// resources per SEP-2640. ' +
-        'Use skill://index.json to enumerate skills; resources/read any skill:// URI; ' +
-        'resources/directory/read lists a directory\'s direct children. ' +
+        'Use skills/list to enumerate skills and skills/get to fetch one entry by URI; ' +
+        'resources/read any skill:// URI; resources/directory/read lists a directory\'s ' +
+        'direct children. NOTE: archive distribution is a DEFERRED feature, not part of the ' +
+        'v1 SEP; any archive blobs served here are retained for the deferred-feature research ' +
+        'corpus and never appear in a skills/list entry. ' +
         (opts.adversarial
           ? 'ADVERSARIAL PROFILE ACTIVE: adv-* and refunds fixtures are intentionally SEP-violating.'
           : ''),
     },
   );
 
-  // resources/list — enumerate everything (index + SKILL.mds + supporting files + archives).
+  // resources/list — enumerate readable resources (SKILL.mds + supporting files +
+  // any deferred-fixture archive blobs). Enumeration of skills is skills/list; there
+  // is no skill://index.json.
   server.setRequestHandler('resources/list', async () => {
     return { resources: registry.listResources() };
   });
@@ -122,6 +134,23 @@ export async function buildServer(
     };
   });
 
+  // skills/list — enumerate skill entries (uri + frontmatter + per-file resources).
+  server.setRequestHandler(SKILLS_LIST_METHOD, { params: SkillsListParamsSchema }, async (params) => {
+    const page = registry.skillsList(params?.cursor);
+    const result: { skills: typeof page.skills; nextCursor?: string } = { skills: page.skills };
+    if (page.nextCursor) result.nextCursor = page.nextCursor;
+    return result;
+  });
+
+  // skills/get — the entry for one skill by its SKILL.md URI (listed or not).
+  server.setRequestHandler(SKILLS_GET_METHOD, { params: SkillsGetParamsSchema }, async (params) => {
+    const entry = registry.skillsGet(params.uri);
+    if (!entry) {
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown skill: ${params.uri}`);
+    }
+    return { skill: entry };
+  });
+
   // resources/directory/read — direct children of a directory URI (non-recursive).
   // Custom (non-spec) method: the 3-arg form takes the method name plus explicit
   // params/result schemas, and the handler receives the PARSED PARAMS (not the
@@ -134,13 +163,15 @@ export async function buildServer(
       // not require rejecting a client that supplies one. Be lenient: normalize a
       // trailing slash before lookup rather than erroring on it.
       const uri = params.uri.replace(/\/+$/, '');
-      const children = registry.directoryChildren(uri);
-      if (!children) {
+      const page = registry.directoryPage(uri, params.cursor);
+      if (!page) {
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown directory or not a directory: ${uri}`);
       }
-      // Pagination: echo any incoming cursor as a no-op; never set nextCursor since
-      // we return all direct children in one page. The field is supported in shape.
-      return { resources: children };
+      // Faithful directories return all children in one page (no cursor). The
+      // adv-enumeration-exhaustion skill's directory paginates without end.
+      const result: { resources: typeof page.resources; nextCursor?: string } = { resources: page.resources };
+      if (page.nextCursor) result.nextCursor = page.nextCursor;
+      return result;
     },
   );
 

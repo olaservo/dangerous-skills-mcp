@@ -1,6 +1,20 @@
-# Reconciliation plan: `index.json` → `skills/list` + `skills/get` (+ new fixtures)
+# Reconciliation: `index.json` → `skills/list` + `skills/get` (+ new fixtures)
 
-Status: draft for review. Not yet implemented. This branch (`adv/sep-reconciliation-and-new-fixtures`) adds the catalog entries and fixture scaffolds; the serving changes below are the follow-up.
+Status: **IMPLEMENTED** on this branch (`adv/sep-reconciliation-and-new-fixtures`). The corpus now serves the v1 SEP model — `skills/list` + `skills/get` with a complete per-file `resources` digest set — and the four SEP-current fixtures are wired and passing. This document records the design and what changed.
+
+**What landed:**
+
+- `src/skills.ts` (new) — builds SEP skill entries (`uri` + verbatim `frontmatter` + complete `resources` digest set). Replaces `src/index-json.ts` (removed).
+- `src/resources.ts` — drops the `skill://index.json` resource; builds the entry catalog; adds `skillsList(cursor?)` and `skillsGet(uri)`; keeps `resources/read` + `resources/directory/read`; wires the escape-child, pagination-overflow, and `omitFromResources` hooks; excludes archive-only skills from the listing.
+- `src/server.ts` — registers `skills/list` and `skills/get`; disclaimers in `instructions`.
+- `src/adversarial/*` — `supporting-file-digest-swap` now expressed via `omitFromResources` (unlisted file); `file-url` via a `file:` resource URI; `name-collision` shadows the faithful `review-staged` name; the three server-behaviour fixtures (`directory-walk-escape`, `name-collision`, `enumeration-exhaustion`) are wired + registered; archive fixtures marked DEFERRED.
+- `src/smoke-client.ts` — checks `skills/list` + `skills/get` + per-file digest verification (SKILL.md and a supporting file); drops the `index.json` reads.
+
+`pnpm typecheck` clean; `pnpm smoke` and `pnpm smoke -- --adversarial` both ALL CHECKS PASSED.
+
+## Archives: a deferred feature, retained on purpose
+
+Archives are **not part of the v1 SEP** (see the SEP's "Appendix: Deferred Features"). They are kept in this corpus deliberately — the archive-safety fixtures are a research contribution and a landing spot should archives be reconsidered. Faithful skills pack no archives; only crafted deferred fixtures supply archive blobs, served as ordinary resource bytes and never referenced by a `skills/list` entry. Archive-only skills (e.g. `refunds`) are excluded from the listing (they cannot be expressed in the individual-file model). Every archive fixture's catalog entry is prefixed **DEFERRED**.
 
 ## Why
 
@@ -32,20 +46,15 @@ The [threat model](https://github.com/modelcontextprotocol/experimental-ext-skil
 
 ## New fixtures on this branch
 
-| Fixture | Threat | State on this branch | Serving hook needed |
+| Fixture | Threat | State | How it is exercised |
 | :--- | :--- | :--- | :--- |
-| `adv-nested-consent` | T9 nested-skill consent | **Live** — built + registered | none; nested `SKILL.md` is served as an ordinary supporting file today |
-| `adv-directory-walk-escape` | T5 confused deputy | scaffolded, not registered | `resources.ts` `directoryChildren()` must inject `directoryEscapeChildUri` as a child of the skill root **and** omit it from `resources` |
-| `adv-name-collision` | T8 impersonation | scaffolded, not registered | conformance harness must serve this skill under a **second server identity** colliding with `crossOriginShadowOf` (a genuinely cross-origin topology) |
-| `adv-enumeration-exhaustion` | T6 exhaustion | scaffolded, not registered | `skills/list` (and `directory/read`) serving must honor `paginationOverflow` by always returning a fresh `nextCursor` and never terminating |
+| `adv-nested-consent` | T9 nested-skill consent | **Live** | nested `SKILL.md` served as an ordinary supporting file; smoke prints the oracle |
+| `adv-directory-walk-escape` | T5 confused deputy | **Live** | `directoryChildren()` lists `directoryEscapeChildUri` (out-of-subtree) but omits it from `resources`; smoke asserts the child is listed and that reading it misses |
+| `adv-name-collision` | T8 impersonation | **Live** | shadows the faithful `review-staged` name at a distinct URI; smoke asserts >1 entry named `review-staged` incl. the fixture |
+| `adv-enumeration-exhaustion` | T6 exhaustion | **Live** | `skillsList()` honors `paginationOverflow`, returning an endless `nextCursor`; smoke follows it a bounded 5 pages and asserts it never terminates |
 
-The three scaffolds are exported from `src/adversarial/index.ts` but intentionally **not** in `buildAdversarialFixtures()`. The smoke client skips catalog keys with no served fixture (`continue`), so nothing reports a false pass in the meantime. Wiring + registering them is the last step of the reconciliation.
+## Remaining follow-ups (not blocking)
 
-## Suggested sequence
-
-1. **Discovery swap** — `index.json` → `skills/list`/`skills/get`, populate `resources` per file. (Largest change; unblocks everything else.)
-2. **Archive demotion** — move archive fixtures behind a deferred profile.
-3. **`denItem` field** — generalize + update the smoke-client prefix.
-4. **Wire the three pending fixtures** — implement the three serving hooks above, then register the builders.
-
-Each step is independently reviewable and could be its own PR; 1 is the prerequisite for 4.
+- **`denItem` field semantics.** The field is documented as "reviewer (Den Delimarsky) item id." The SEP-current cases reuse the closest bucket for smoke display while `sepClause` carries the honest attribution ("SEP-current"). Recommend renaming the field to something origin-neutral (e.g. `reviewItem`) or letting it carry `"SEP-current"`, and updating the smoke-client format string that hardcodes the `Den ` prefix.
+- **Cross-origin realism for `adv-name-collision`.** Modeled within one server as a same-name / distinct-URI collision. A fully cross-origin version would serve the shadow under a second server identity — a harness change, out of scope here.
+- **Deferred-archive profile.** Archive fixtures currently load in the `--adversarial` profile with DEFERRED disclaimers. A dedicated `--profile deferred-archives` split is optional polish.

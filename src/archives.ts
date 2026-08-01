@@ -1,12 +1,12 @@
 /**
- * archives.ts — Pack each served skill directory into `.tar.gz` and `.zip` at
- * startup, into an OS temp cache. SKILL.md sits at archive root; entries are
- * relative. Archives are served as blob resources and referenced (with digests)
- * from skill://index.json.
+ * archives.ts — Archive packing helpers. Archives are a DEFERRED feature (not in
+ * the v1 SEP; see the SEP's "Appendix: Deferred Features"). SKILL.md sits at archive
+ * root; entries are relative. Only deferred fixtures serve archive blobs now — they
+ * are ordinary blob resources and never appear in a `skills/list` entry.
  *
- * The plain `packTarGz` / `packZip` builders here pack a faithful skill. The
- * adversarial fixtures build their own malformed archives via the low-level
- * helpers (`writeRawTarGz`) re-exported below.
+ * The plain `packTarGz` / `packZip` builders pack a faithful skill (unused by the
+ * v1 serving path; kept for the deferred profile). The adversarial fixtures build
+ * their own malformed archives via the low-level helpers (`writeRawTarGz`) re-exported below.
  */
 import { createGzip, deflateRawSync } from 'node:zlib';
 import { promises as fs } from 'node:fs';
