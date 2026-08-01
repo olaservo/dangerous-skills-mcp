@@ -34,7 +34,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-traversal',
     summary: 'tar.gz with ../../evil.txt and an absolute-path entry',
-    sepClause: 'Archives §"Unpacking" MUSTs: reject entries that escape the destination directory',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: reject entries that escape the destination directory',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -43,7 +43,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-symlink-escape',
     summary: 'symlink entry "id_rsa.example" -> ../../../etc/passwd (benign decoy)',
-    sepClause: 'Archives §"Unpacking" MUSTs: symlink entries that resolve outside the destination MUST be rejected',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: symlink entries that resolve outside the destination MUST be rejected',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -52,7 +52,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-hardlink-escape',
     summary: 'hard-link entry "creds.example" -> ../../../etc/passwd (benign decoy)',
-    sepClause: 'Archives §"Unpacking" MUSTs: reject symlinks OR HARD LINKS that resolve outside the skill dir',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: reject symlinks OR HARD LINKS that resolve outside the skill dir',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -61,7 +61,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-decompression-bomb',
     summary: 'few-KB tar.gz expanding to ~128 MiB (single entry over any sane bound)',
-    sepClause: 'Archives §"Unpacking" MUSTs: enforce a maximum expanded size / entry count',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: enforce a maximum expanded size / entry count',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -70,7 +70,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-setuid',
     summary: 'supporting file "tools/escalate" with setuid bit (mode 04755)',
-    sepClause: 'Archives §"Unpacking" (Den-proposed expansion): clear setuid/setgid/sticky bits; extract as host uid/gid',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" (Den-proposed expansion): clear setuid/setgid/sticky bits; extract as host uid/gid',
     denItem: 'C1',
     expectedAction: 'sanitize',
     oracle:
@@ -79,7 +79,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-non-regular',
     summary: 'non-regular file entry "pipe.fifo" (FIFO, typeflag 6)',
-    sepClause: 'Archives §"Unpacking" (Den-proposed expansion): reject non-regular file types (device nodes, FIFOs)',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" (Den-proposed expansion): reject non-regular file types (device nodes, FIFOs)',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -89,7 +89,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     key: 'adv-cumulative-budget',
     summary:
       'five ~45 MiB compressible archives from one server (~225 MiB unpacked aggregate, KB on the wire, over a 200 MiB budget)',
-    sepClause: 'Archives §"Unpacking" (Den-proposed expansion): per-archive AND cumulative per-server size limits',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" (Den-proposed expansion): per-archive AND cumulative per-server size limits',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -98,7 +98,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-archive-windows-paths',
     summary: 'tar entries with backslash, drive-absolute (C:\\) and UNC (\\\\host\\share) names',
-    sepClause: 'Archives §"Unpacking" MUSTs: entry paths MUST be relative and "/"-separated — Windows anchors are absolute/non-conforming',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: entry paths MUST be relative and "/"-separated — Windows anchors are absolute/non-conforming',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -118,7 +118,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-zip-traversal',
     summary: 'ZIP with ../../evil.txt and an absolute-path entry (exercises the zip extractor)',
-    sepClause: 'Archives §"Unpacking" MUSTs: reject traversal/absolute paths — applies to ZIP delivery too',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: reject traversal/absolute paths — applies to ZIP delivery too',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -127,7 +127,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-zip-symlink-escape',
     summary: 'ZIP symlink "id_rsa.example" -> ../../../etc/passwd via S_IFLNK external attrs',
-    sepClause: 'Archives §"Unpacking" MUSTs: reject links resolving outside the skill dir — applies to ZIP symlinks too',
+    sepClause: 'DEFERRED (archives are not in the v1 SEP; see the SEP Appendix). Archives §"Unpacking" MUSTs: reject links resolving outside the skill dir — applies to ZIP symlinks too',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
@@ -135,9 +135,9 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   },
   {
     key: 'adv-frontmatter-mismatch',
-    summary: 'index.json frontmatter differs field-by-field from served SKILL.md',
+    summary: 'skills/list entry frontmatter differs field-by-field from served SKILL.md',
     sepClause:
-      'index.json §"frontmatter" (current MUST): "The frontmatter object MUST be identical in content to the frontmatter of the SKILL.md it describes" — this index diverges from the served SKILL.md; Den B2(1) escalates to field-by-field host re-verification',
+      'skills/list entry §"frontmatter" (current MUST): "The frontmatter object MUST be identical in content to the frontmatter of the SKILL.md it describes" — this entry diverges from the served SKILL.md, and §Integrity requires the host to re-parse the fetched SKILL.md field-by-field',
     denItem: 'B2',
     expectedAction: 'gate',
     oracle:
@@ -146,7 +146,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   {
     key: 'adv-supporting-file-digest-swap',
     summary: 'url-only skill; supporting scripts/helper.sh is fetched undigested (only SKILL.md is pinned)',
-    sepClause: 'index.json §"digest": only SKILL.md is digested; supporting files fetched via resources/read are unpinned',
+    sepClause: 'skills/list entry §"resources" (current MUST): the resources set MUST enumerate every file with a digest; this fixture SERVES a supporting file but OMITS it from resources, so it is unlisted — a read of it is a verification failure (§Integrity and verification)',
     denItem: 'B1',
     expectedAction: 'gate',
     oracle:
@@ -156,7 +156,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     key: 'adv-live-read-divergence',
     summary: 'archive copy of scripts/helper.sh is digest-verified; live resources/read returns different bytes',
     sepClause:
-      'Integrity & verification (Den-proposed B2(2)): after digest-verifying an archive, serve every file read from the verified unpacked copy, not live resources/read',
+      'DEFERRED (archive feature, not in the v1 SEP). Integrity & verification: after digest-verifying an archive, serve every file read from the verified unpacked copy, not live resources/read — the same serve-from-verified-copy principle the v1 SEP applies to the install/cache path',
     denItem: 'B2',
     expectedAction: 'gate',
     oracle:
@@ -179,13 +179,13 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     denItem: 'D7',
     expectedAction: 'reject',
     oracle:
-      'A host that re-verifies MUST reject the rotated read — the new bytes no longer match the index digest (SEP line 204). Beyond that, Den D7 PROPOSES binding any persisted per-skill approval to the SKILL.md digest and re-prompting when a later read advertises a different digest under the same URI. (Digest-bound approval is Den-proposed; not yet in the SEP.)',
+      "A host that re-verifies MUST reject the rotated read — the new bytes no longer match the entry's resources digest (§Integrity and verification). The v1 SEP also binds persisted per-skill approval to the entry's resources set (§Content-bound approval): a later entry advertising a different set revokes the approval and re-prompts.",
   },
   {
     key: 'refunds',
-    summary: 'two archive-only skills at skill://acme/{billing,support}/refunds, frontmatter.name="refunds"',
+    summary: 'two archive-only skills at skill://acme/{billing,support}/refunds, frontmatter.name="refunds" (DEFERRED archive feature)',
     sepClause:
-      'Archives §addressing: the CURRENT SEP unpacks archive-only skills under skill://<frontmatter.name>/… — Den A2 proposes preserving the full path prefix',
+      'RESOLVED by the v1 SEP: a skill is identified by its `uri`, not its `name` (§Names), so these two no longer collide. Retained as a DEFERRED archive-only fixture — archives are not in the v1 SEP',
     denItem: 'A2',
     expectedAction: 'reject',
     oracle:
@@ -202,9 +202,9 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
   },
   {
     key: 'adv-file-url',
-    summary: 'index advertises a file: artifact url, both file:///… and the no-authority file:/… form',
+    summary: 'the skills/list entry advertises a file: URI (as the SKILL.md uri and its resources entry), both file:///… and the no-authority file:/… form',
     sepClause:
-      'Skills §resource addressing + trust boundary (Den D4, adjacent): artifact urls are skill:// MCP resource URIs; a file: url is an out-of-band local-file origin — surfaced in the PR #831 hardening follow-up',
+      'Resources §"Each uri MUST be the skill\'s SKILL.md or a file within the skill\'s directory" + trust boundary (Den D4, adjacent): a file: URI is an out-of-band local-file origin, never a skill:// resource — surfaced in the PR #831 hardening follow-up',
     denItem: 'D4',
     expectedAction: 'reject',
     oracle:
@@ -214,7 +214,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     key: 'adv-oversized-payload',
     summary: 'url-only skill whose SKILL.md resource is ~16 MiB — far over any sane raw cap',
     sepClause:
-      'Archives §"Unpacking" size MUSTs + index.json §digest (Den C1, extended to the fetch layer): size limits must apply when a resource is FETCHED/decoded, not only after unpack — surfaced in the PR #831 hardening follow-up',
+      'Resource-fetch size bound (Den C1, extended to the fetch layer): size limits must apply when a resource is FETCHED/decoded, not only after any (deferred) archive unpack — surfaced in the PR #831 hardening follow-up',
     denItem: 'C1',
     expectedAction: 'reject',
     oracle:
