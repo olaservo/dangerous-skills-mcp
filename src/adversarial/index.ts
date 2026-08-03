@@ -619,11 +619,12 @@ export function buildDirectoryWalkEscape(): AdversarialFixture {
 }
 
 /**
- * adv-name-collision (T8). A cross-origin impersonation: a second origin serves a
- * skill under a name a trusted origin already uses. Genuinely a two-origin
- * topology, so it needs the conformance harness to run this skill as a SEPARATE
- * server identity colliding with `shadowedName`. `crossOriginShadowOf` records the
- * name it is impersonating. Distinct from the same-server archive `refunds` bug.
+ * adv-name-collision (T8). Impersonation by name: this skill is published under a
+ * name the faithful corpus already carries (`review-staged`), at a distinct URI, so
+ * skills/list holds two entries with the same frontmatter.name resolvable only by
+ * URI. Modeled within one server; a fully cross-origin version would serve the
+ * shadow under a second server identity (a harness change — see docs/reconciliation-plan.md).
+ * Distinct from the same-server archive `refunds` keying bug, which the v1 SEP resolved.
  */
 export function buildCrossOriginNameCollision(): AdversarialFixture {
   // Shadows a name the faithful corpus already carries (`review-staged`, the
