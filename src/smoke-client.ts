@@ -302,6 +302,33 @@ async function runAdversarialReport(client: Client): Promise<void> {
     );
   }
 
+  // Buffer-cap regression guard: SDK v2 caps the stdio read buffer (default 10 MiB) and
+  // kills the connection when a single frame exceeds it, so the oversized fixtures only
+  // survive because both ends set STDIO_MAX_BUFFER_SIZE. Nothing else in this gate pulls a
+  // frame over 10 MiB -- adv-oversized-payload is skipped above and adv-walk-budget's bulk
+  // lives in supporting files the loop never touches -- so without this check the cap could
+  // be removed and the smoke run would still pass.
+  //
+  // The threshold is on the DECODED payload (9 MiB), not the frame: that 9 MiB rides the
+  // wire as ~12.6 MiB of base64, which is what clears the 10 MiB default cap. Reading it
+  // at all proves the raised cap is in effect -- with the default, the read fails and the
+  // whole connection closes. Uses part-1.bin rather than the 16 MiB adv-oversized-payload
+  // so the gate stays cheap.
+  const walkBudgetPart = 'skill://adv-walk-budget/data/part-1.bin';
+  if (advEntries.some((e) => entryMatchUri(e).includes('adv-walk-budget'))) {
+    let partBytes = 0;
+    try {
+      partBytes = (await readBytes(client, walkBudgetPart)).bytes.length;
+    } catch (err) {
+      process.stdout.write(`  read failed: ${(err as Error).message}\n`);
+    }
+    check(
+      'oversized frame survives the stdio buffer cap (adv-walk-budget part-1.bin)',
+      partBytes >= 9 * 1024 * 1024,
+      `${partBytes} bytes decoded (~${Math.round((partBytes * 4) / 3 / 1024 / 1024)} MiB base64 on the wire)`,
+    );
+  }
+
   // Archive-only fidelity (Den A1/A2): the refunds pair MUST omit url/digest and a
   // direct resources/read of their SKILL.md URI MUST miss (not individually addressable).
   const refunds = advEntries.filter((e) => entryMatchUri(e).includes('refunds'));

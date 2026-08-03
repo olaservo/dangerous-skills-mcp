@@ -42,6 +42,20 @@ pnpm smoke                   # PASS/FAIL per check
 pnpm smoke -- --adversarial  # also prints what a conformant host MUST do per fixture
 ```
 
+### Reading the oversized fixtures over stdio
+
+Two adversarial fixtures are deliberately larger than the MCP SDK's **default 10 MiB stdio read-buffer cap**: `adv-oversized-payload` (16 MiB) and `adv-walk-budget` (3 × 9 MiB, ~12.6 MiB each once base64-framed). A client using the default cap does not get an error on those reads — the SDK **closes the whole connection**.
+
+This matters for host testing: `adv-oversized-payload`'s oracle is that a host must bound the size of a fetched resource *before* decoding it. A host that simply gets disconnected never receives the payload, and can be mis-scored as having correctly rejected it.
+
+To exercise those fixtures, either use HTTP (`pnpm serve:http`, unaffected by the cap) or raise the cap on your client:
+
+```ts
+new StdioClientTransport({ command, args, maxBufferSize: 64 * 1024 * 1024 });
+```
+
+This repo's own server and smoke client both set `STDIO_MAX_BUFFER_SIZE` (64 MiB, `src/server.ts`), so `pnpm smoke -- --adversarial` covers them.
+
 ## What it serves
 
 Skills are addressed under a `skill://` URI scheme:
