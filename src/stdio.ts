@@ -7,7 +7,7 @@
  *   pnpm serve:stdio -- --adversarial      # + adversarial fixtures
  */
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import { buildServer } from './server.js';
+import { buildServer, STDIO_MAX_BUFFER_SIZE } from './server.js';
 
 function wantsAdversarial(argv: string[]): boolean {
   if (argv.includes('--adversarial')) return true;
@@ -24,7 +24,9 @@ async function main(): Promise<void> {
       (adversarial ? ` (incl. ${registry.getFixtures().length} adversarial fixtures)` : '') +
       '\n',
   );
-  const transport = new StdioServerTransport();
+  const transport = new StdioServerTransport(process.stdin, process.stdout, {
+    maxBufferSize: STDIO_MAX_BUFFER_SIZE,
+  });
   await server.connect(transport);
 }
 

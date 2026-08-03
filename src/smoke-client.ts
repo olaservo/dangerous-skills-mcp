@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { z } from 'zod';
-import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION } from './server.js';
+import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION, STDIO_MAX_BUFFER_SIZE } from './server.js';
 import { ADVERSARIAL_CASES } from './adversarial/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +101,7 @@ async function connect(args: Args): Promise<Client> {
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import tsx`.trim(),
       },
       stderr: 'inherit',
+      maxBufferSize: STDIO_MAX_BUFFER_SIZE,
     });
     await client.connect(transport);
     process.stdout.write('Connected over stdio (spawned tsx src/stdio.ts)\n');

@@ -16,6 +16,21 @@ export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
 export const DIRECTORY_READ_METHOD = 'resources/directory/read';
 
 /**
+ * Read-buffer cap for the stdio transport, in bytes.
+ *
+ * SDK v2 caps the stdio read buffer at 10 MiB by default (v1 buffered unbounded) and
+ * closes the connection when a single message would exceed it. Several adversarial
+ * fixtures are deliberately larger than that — `adv-oversized-payload` is a 16 MiB body
+ * and `adv-walk-budget` serves 3 x 9 MiB files, both of which grow further once
+ * base64-encoded into a JSON-RPC frame — so the default cap would make them unreadable
+ * over stdio, the repo's documented default transport. Serving oversized payloads is the
+ * point of those fixtures, so raise the cap rather than shrink the corpus.
+ *
+ * Both ends must agree: the server writes the frame, the client reads it.
+ */
+export const STDIO_MAX_BUFFER_SIZE = 64 * 1024 * 1024;
+
+/**
  * Params schema for the custom resources/directory/read method. SDK v2 registers
  * a non-spec method with `setRequestHandler(method, { params, result? }, handler)`,
  * so the schema describes the *params* object only — the method name is the first
