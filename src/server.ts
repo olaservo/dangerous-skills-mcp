@@ -88,7 +88,9 @@ export async function buildServer(
     },
   );
 
-  // resources/list — enumerate everything (index + SKILL.mds + supporting files + archives).
+  // resources/list — enumerate readable resources (SKILL.mds + supporting files +
+  // any deferred-fixture archive blobs). Enumeration of skills is skills/list; there
+  // is no skill://index.json.
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     return { resources: registry.listResources() };
   });
@@ -133,13 +135,14 @@ export async function buildServer(
     // not require rejecting a client that supplies one. Be lenient: normalize a
     // trailing slash before lookup rather than erroring on it.
     const uri = request.params.uri.replace(/\/+$/, '');
-    const children = registry.directoryChildren(uri);
-    if (!children) {
+    const page = registry.directoryPage(uri, request.params.cursor);
+    if (!page) {
       throw new McpError(ErrorCode.InvalidParams, `Unknown directory or not a directory: ${uri}`);
     }
-    // Pagination: echo any incoming cursor as a no-op; never set nextCursor since
-    // we return all direct children in one page. The field is supported in shape.
-    const result: { resources: typeof children; nextCursor?: string } = { resources: children };
+    // Faithful directories return all children in one page (no cursor). The
+    // adv-enumeration-exhaustion skill's directory paginates without end.
+    const result: { resources: typeof page.resources; nextCursor?: string } = { resources: page.resources };
+    if (page.nextCursor) result.nextCursor = page.nextCursor;
     return result;
   });
 

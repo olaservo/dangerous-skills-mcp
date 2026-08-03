@@ -90,6 +90,8 @@ export class ResourceRegistry {
   private skills: Skill[] = [];
   private fixtures: AdversarialFixture[] = [];
   private hasPaginationOverflow = false;
+  /** Skill-root URI whose directory reads also paginate without end (adv-enumeration-exhaustion). */
+  private overflowDirRoot?: string;
 
   static async build(opts: RegistryOptions = {}): Promise<ResourceRegistry> {
     const reg = new ResourceRegistry();
@@ -187,9 +189,11 @@ export class ResourceRegistry {
       this.escapeChildren.set(escapeChild, escapeChild.split('/').pop() ?? 'escape');
     }
 
-    // adv-enumeration-exhaustion: mark that skills/list must paginate without end.
+    // adv-enumeration-exhaustion: mark that skills/list — and this skill's directory
+    // reads — must paginate without end.
     if ((skill as Skill & { paginationOverflow?: boolean }).paginationOverflow) {
       this.hasPaginationOverflow = true;
+      this.overflowDirRoot = `skill://${auth}`;
     }
 
     this.skills.push(skill);
@@ -307,6 +311,30 @@ export class ResourceRegistry {
         return { uri: childUri, name: this.escapeChildren.get(childUri) ?? 'unknown', mimeType: 'text/markdown' };
       })
       .sort((a, b) => a.uri.localeCompare(b.uri));
+  }
+
+  /**
+   * `resources/directory/read`: a page of a directory's direct children. Faithful
+   * directories return every child in one page with no cursor. The
+   * adv-enumeration-exhaustion skill's directory paginates without end, mirroring its
+   * skills/list behaviour, so the fixture exercises BOTH enumeration surfaces.
+   * Returns undefined if the URI is not a directory.
+   */
+  directoryPage(uri: string, cursor?: string): { resources: ResourceListItem[]; nextCursor?: string } | undefined {
+    if (cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
+      const n = Number(cursor.slice(OVERFLOW_CURSOR.length)) || 1;
+      return { resources: [this.syntheticOverflowChild(uri.split('#')[0], n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
+    }
+    const children = this.directoryChildren(uri);
+    if (!children) return undefined;
+    const page: { resources: ResourceListItem[]; nextCursor?: string } = { resources: children };
+    if (this.overflowDirRoot && uri === this.overflowDirRoot) page.nextCursor = `${OVERFLOW_CURSOR}1`;
+    return page;
+  }
+
+  /** One benign synthetic directory child for the endless-pagination tail. */
+  private syntheticOverflowChild(parentUri: string, n: number): ResourceListItem {
+    return { uri: `${parentUri}/page-${n}.md`, name: `page-${n}.md`, mimeType: 'text/markdown' };
   }
 
   getFixtures(): AdversarialFixture[] {

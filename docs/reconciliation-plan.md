@@ -63,6 +63,10 @@ Verified: `pnpm smoke:http -- --adversarial` against `src/http.ts --adversarial`
 
 ## Remaining follow-ups (not blocking)
 
+From a Codex review of the branch (fixes already applied on this branch: enumeration-exhaustion now paginates on `resources/directory/read` too, `adv-file-url` oracle no longer claims all non-`skill://` schemes are forbidden, stale `resources/list` comment corrected). Still open:
+
+- **`skills/list` list-caching attributes.** For protocol `2026-07-28+` the result should carry `ttlMs` and `cacheScope` ([SEP-2549]). Deferred pending (a) a decision on whether this server targets that protocol version and (b) the exact SEP-2549 field schema/values — not guessed here.
+- **Nested skills as first-class skills.** `loadCorpus` rejects disk skills with a descendant `SKILL.md`, and nested `SKILL.md` files are served only as supporting files, so `skills/get` does not answer for a nested skill URI. The v1 SEP allows nested skills; `adv-nested-consent` only tests that nested frontmatter stays inert, not activation. Supporting nested skills end-to-end is a larger change.
 - **`denItem` field semantics.** The field is documented as "reviewer (Den Delimarsky) item id." The SEP-current cases reuse the closest bucket for smoke display while `sepClause` carries the honest attribution ("SEP-current"). Recommend renaming the field to something origin-neutral (e.g. `reviewItem`) or letting it carry `"SEP-current"`, and updating the smoke-client format string that hardcodes the `Den ` prefix.
 - **Cross-origin realism for `adv-name-collision`.** Modeled within one server as a same-name / distinct-URI collision. A fully cross-origin version would serve the shadow under a second server identity — a harness change, out of scope here.
 - **Deferred-archive profile.** Archive fixtures currently load in the `--adversarial` profile with DEFERRED disclaimers. A dedicated `--profile deferred-archives` split is optional polish.
