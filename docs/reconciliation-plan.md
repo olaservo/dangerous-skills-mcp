@@ -53,6 +53,14 @@ The [threat model](https://github.com/modelcontextprotocol/experimental-ext-skil
 | `adv-name-collision` | T8 impersonation | **Live** | shadows the faithful `review-staged` name at a distinct URI; smoke asserts >1 entry named `review-staged` incl. the fixture |
 | `adv-enumeration-exhaustion` | T6 exhaustion | **Live** | `skillsList()` honors `paginationOverflow`, returning an endless `nextCursor`; smoke follows it a bounded 5 pages and asserts it never terminates |
 
+## Known limitations (by design)
+
+- **`skills/get` errors on archive-only skills.** The SEP says a server MUST answer `skills/get` for every skill it serves, but archive-only fixtures (`refunds`) are excluded from both the listing and the by-URI map, so `skills/get` on their SKILL.md URI returns `-32602`. An archive-only skill has no individually-addressable SKILL.md to build a valid entry from, and archive-only is a deferred concept with no v1 representation — fabricating an entry for unreadable content would be worse. Accepted deviation, scoped to the deferred feature.
+- **`--adversarial` makes `skills/list` pagination unbounded.** Once the `adv-enumeration-exhaustion` fixture loads, every `skills/list` first page carries a `nextCursor` into the endless synthetic tail (that is the fixture). The first page still returns all real entries, so a client that stops there sees the whole catalog; only a client that blindly follows the cursor hangs — exactly the host behavior under test. The smoke client caps its own follow at 5 pages.
+- **Archive fixtures are inert under pure v1 discovery.** No `skills/list` entry references an archive blob, so a v1 host never fetches or unpacks them and the archive-safety oracles cannot fire against a v1 consumer. This is the intended consequence of deferral; the smoke report still surfaces their oracles by matching the blob URI in `resources/list`. "Served + oracle printed" is not "exercised" for these.
+
+Verified: `pnpm smoke:http -- --adversarial` against `src/http.ts --adversarial` — ALL CHECKS PASSED (the HTTP transport serves the new methods, not just stdio).
+
 ## Remaining follow-ups (not blocking)
 
 - **`denItem` field semantics.** The field is documented as "reviewer (Den Delimarsky) item id." The SEP-current cases reuse the closest bucket for smoke display while `sepClause` carries the honest attribution ("SEP-current"). Recommend renaming the field to something origin-neutral (e.g. `reviewItem`) or letting it carry `"SEP-current"`, and updating the smoke-client format string that hardcodes the `Den ` prefix.
