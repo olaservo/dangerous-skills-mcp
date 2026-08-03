@@ -6,7 +6,7 @@
  *   pnpm serve:stdio                       # faithful corpus only
  *   pnpm serve:stdio -- --adversarial      # + adversarial fixtures
  */
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { buildServer } from './server.js';
 
 function wantsAdversarial(argv: string[]): boolean {

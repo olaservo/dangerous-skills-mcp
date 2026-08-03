@@ -15,19 +15,20 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {
-  ListResourcesResultSchema,
-  ReadResourceResultSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { z } from 'zod';
 import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION } from './server.js';
 import { ADVERSARIAL_CASES } from './adversarial/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Client-side result schema for the custom resources/directory/read method. Kept
+ * separate from the server's export on purpose — this is the client's independent
+ * check of what came back over the wire. A non-spec method ALWAYS needs an explicit
+ * result schema on `client.request()` (only spec methods resolve one by name).
+ */
 const DirectoryReadResultSchema = z.object({
   resources: z.array(
     z.object({
@@ -43,16 +44,16 @@ const DirectoryReadResultSchema = z.object({
 /** Permissive resources/list schema that preserves the SEP metadata + base-MCP size fields. */
 const ListWithMetaSchema = z.object({
   resources: z.array(
-    z
-      .object({
-        uri: z.string(),
-        name: z.string(),
-        mimeType: z.string().optional(),
-        description: z.string().optional(),
-        size: z.number().optional(),
-        _meta: z.record(z.unknown()).optional(),
-      })
-      .passthrough(),
+    // zod 4: `z.looseObject` replaces `z.object(...).passthrough()`, and `z.record`
+    // takes an explicit key type.
+    z.looseObject({
+      uri: z.string(),
+      name: z.string(),
+      mimeType: z.string().optional(),
+      description: z.string().optional(),
+      size: z.number().optional(),
+      _meta: z.record(z.string(), z.unknown()).optional(),
+    }),
   ),
   nextCursor: z.string().optional(),
 });
@@ -108,7 +109,7 @@ async function connect(args: Args): Promise<Client> {
 }
 
 async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; mimeType?: string; isBlob: boolean }> {
-  const res = await client.request({ method: 'resources/read', params: { uri } }, ReadResourceResultSchema);
+  const res = await client.request({ method: 'resources/read', params: { uri } });
   const content = res.contents[0];
   if (content && 'text' in content && typeof content.text === 'string') {
     return { bytes: Buffer.from(content.text, 'utf8'), mimeType: content.mimeType, isBlob: false };
@@ -147,7 +148,7 @@ async function runCoreChecks(client: Client): Promise<IndexDoc> {
   check('extension declares directoryRead: true', ext?.directoryRead === true);
 
   // resources/list
-  const list = await client.request({ method: 'resources/list', params: {} }, ListResourcesResultSchema);
+  const list = await client.request({ method: 'resources/list', params: {} });
   const uris = new Set(list.resources.map((r) => r.uri));
   check('resources/list returns the index', uris.has('skill://index.json'), `${list.resources.length} resources`);
   const hasSkillMd = [...uris].some((u) => u.endsWith('/SKILL.md'));

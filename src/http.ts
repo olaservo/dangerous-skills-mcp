@@ -18,7 +18,7 @@
  * access control is the Space's public/private setting (private → bearer token).
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
 import { buildServer } from './server.js';
 import { ResourceRegistry, type RegistryOptions } from './resources.js';
 
@@ -93,7 +93,7 @@ async function handle(
   try {
     // Fresh server + transport per request (stateless), but reuse the shared registry.
     const { server } = await buildServer(opts, registry);
-    const transport = new StreamableHTTPServerTransport({
+    const transport = new NodeStreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: true,
       allowedHosts: ALLOWED_HOSTS,
