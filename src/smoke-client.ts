@@ -399,6 +399,25 @@ async function runAdversarialReport(client: Client): Promise<void> {
       pages === CAP && !!cursor,
       'a host MUST cap how far it follows the cursor',
     );
+
+    // The same fixture's directory reads also paginate without end.
+    const root = 'skill://adv-enumeration-exhaustion';
+    const dr0 = await client.request({ method: DIRECTORY_READ_METHOD, params: { uri: root } }, DirectoryReadResultSchema);
+    let dcursor = dr0.nextCursor;
+    let dpages = 0;
+    while (dcursor && dpages < CAP) {
+      const dn = await client.request(
+        { method: DIRECTORY_READ_METHOD, params: { uri: root, cursor: dcursor } },
+        DirectoryReadResultSchema,
+      );
+      dcursor = dn.nextCursor;
+      dpages++;
+    }
+    check(
+      `enumeration-exhaustion: resources/directory/read still paginating after ${CAP} extra pages`,
+      dpages === CAP && !!dcursor,
+      'both enumeration surfaces are unbounded',
+    );
   }
 }
 

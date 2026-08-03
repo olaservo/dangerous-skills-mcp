@@ -208,7 +208,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     denItem: 'D4',
     expectedAction: 'reject',
     oracle:
-      'Host MUST refuse non-skill:// artifact urls — especially file: — and MUST match on the URL SCHEME, not a "file://" prefix: the no-authority RFC 8089 forms file:/etc/passwd and file:etc/passwd slip past a startswith("file://") check yet still read the local filesystem. (Research: PR #831 follow-up; not yet in the SEP.)',
+      'The SEP permits non-skill:// schemes for a server\'s own resources (§Resource Mapping), so the violation is NOT "the scheme isn\'t skill://" — it is that a file: URI names an out-of-band LOCAL-FILESYSTEM origin, never a resource the server serves. A host MUST NOT resolve it, and MUST match on the URL SCHEME, not a "file://" prefix: the no-authority RFC 8089 forms file:/etc/passwd and file:etc/passwd slip past a startswith("file://") check yet still read the local filesystem. (Research: PR #831 follow-up; not yet in the SEP.)',
   },
   {
     key: 'adv-oversized-payload',
