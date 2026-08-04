@@ -253,9 +253,14 @@ export class ResourceRegistry {
    * in one page with no cursor. When the adv-enumeration-exhaustion fixture is served,
    * the first page carries a `nextCursor` into an endless synthetic tail — a host MUST
    * bound how far it follows.
+   *
+   * The overflow cursor is honored ONLY while the fixture is active: in the faithful
+   * profile a crafted `adv-overflow-N` cursor must not conjure synthetic entries that
+   * `skills/get`/`resources/read` cannot satisfy, so unknown cursors are ignored
+   * (same no-op leniency as directory pagination) and the full faithful page returned.
    */
   skillsList(cursor?: string): SkillsPage {
-    if (cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
+    if (this.hasPaginationOverflow && cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
       const n = Number(cursor.slice(OVERFLOW_CURSOR.length)) || 1;
       return { skills: [this.syntheticOverflowEntry(n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
     }
@@ -319,16 +324,21 @@ export class ResourceRegistry {
    * adv-enumeration-exhaustion skill's directory paginates without end, mirroring its
    * skills/list behaviour, so the fixture exercises BOTH enumeration surfaces.
    * Returns undefined if the URI is not a directory.
+   *
+   * The overflow cursor is scoped to the fixture's own directory root: on any other
+   * URI the cursor is ignored (no-op leniency), so a nonexistent directory plus a
+   * crafted cursor still errors and a faithful directory never pages synthetically.
    */
   directoryPage(uri: string, cursor?: string): { resources: ResourceListItem[]; nextCursor?: string } | undefined {
-    if (cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
+    const isOverflowRoot = this.overflowDirRoot !== undefined && uri === this.overflowDirRoot;
+    if (isOverflowRoot && cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
       const n = Number(cursor.slice(OVERFLOW_CURSOR.length)) || 1;
-      return { resources: [this.syntheticOverflowChild(uri.split('#')[0], n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
+      return { resources: [this.syntheticOverflowChild(uri, n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
     }
     const children = this.directoryChildren(uri);
     if (!children) return undefined;
     const page: { resources: ResourceListItem[]; nextCursor?: string } = { resources: children };
-    if (this.overflowDirRoot && uri === this.overflowDirRoot) page.nextCursor = `${OVERFLOW_CURSOR}1`;
+    if (isOverflowRoot) page.nextCursor = `${OVERFLOW_CURSOR}1`;
     return page;
   }
 

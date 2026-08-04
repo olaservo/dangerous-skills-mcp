@@ -189,7 +189,7 @@ export const ADVERSARIAL_CASES: AdversarialCase[] = [
     denItem: 'A2',
     expectedAction: 'reject',
     oracle:
-      'Per the CURRENT SEP, archive-only skills are addressed by frontmatter.name, so both "refunds" collapse to skill://refunds/… and COLLIDE — this fixture demonstrates the A2 bug. Den A2 PROPOSES keying by the full skill:// authority (preserving the path prefix) so the two stay distinct. (Den-proposed; not yet in the SEP.)',
+      'The v1 SEP resolves this for listed skills (identified by `uri`, §Names), but archives are DEFERRED — under the pre-v1 archive draft, archive-only skills were addressed by frontmatter.name, so both "refunds" collapse to skill://refunds/… and COLLIDE (the A2 bug this fixture preserves). Den A2 PROPOSES keying by the full skill:// authority (preserving the path prefix) so the two stay distinct. (Den-proposed; not yet in the SEP.)',
   },
   {
     key: 'adv-cross-server-read',

@@ -132,7 +132,8 @@ async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; 
 const ResourceDigestSchema = z.object({ uri: z.string(), digest: z.string() });
 const SkillEntrySchema = z.object({
   uri: z.string(),
-  frontmatter: z.record(z.unknown()),
+  // zod 4: `z.record` takes an explicit key type.
+  frontmatter: z.record(z.string(), z.unknown()),
   resources: z.array(ResourceDigestSchema).optional(),
 });
 const SkillsListResultSchema = z.object({
@@ -149,7 +150,7 @@ async function skillsList(client: Client, cursor?: string): Promise<{ skills: Sk
   );
 }
 
-async function runCoreChecks(client: Client): Promise<void> {
+async function runCoreChecks(client: Client, adversarial: boolean): Promise<void> {
   process.stdout.write('\n== Core conformance checks ==\n');
 
   // Capability advertisement.
@@ -252,6 +253,32 @@ async function runCoreChecks(client: Client): Promise<void> {
     check('directory/read on unknown URI errors with -32602', code === -32602, `code=${code}`);
   }
   if (!errored) check('directory/read on unknown URI errors with -32602', false, 'no error thrown');
+
+  // Cursor scope: the adversarial overflow cursor is fixture-scoped, so a crafted
+  // cursor on an unknown directory MUST still error (in BOTH profiles), and in the
+  // faithful profile a crafted skills/list cursor MUST NOT conjure synthetic entries
+  // that skills/get and resources/read cannot satisfy.
+  let cursorErrored = false;
+  try {
+    await client.request(
+      { method: DIRECTORY_READ_METHOD, params: { uri: 'skill://nonexistent/nope', cursor: 'adv-overflow-1' } },
+      DirectoryReadResultSchema,
+    );
+  } catch (err) {
+    cursorErrored = true;
+    const code = (err as { code?: number }).code;
+    check('directory/read on unknown URI + crafted overflow cursor errors with -32602', code === -32602, `code=${code}`);
+  }
+  if (!cursorErrored) check('directory/read on unknown URI + crafted overflow cursor errors with -32602', false, 'no error thrown');
+
+  if (!adversarial) {
+    const crafted = await skillsList(client, 'adv-overflow-1');
+    check(
+      'crafted overflow cursor in faithful mode yields no synthetic entries and no nextCursor',
+      !crafted.nextCursor && crafted.skills.every((s) => !s.uri.includes('adv-enumeration-exhaustion')),
+      `${crafted.skills.length} skills, nextCursor=${String(crafted.nextCursor)}`,
+    );
+  }
 
   // SEP Resource Metadata SHOULD + base-MCP `size` on the SKILL.md list item.
   const listFull = await client.request({ method: 'resources/list', params: {} }, ListWithMetaSchema);
@@ -426,7 +453,7 @@ async function main(): Promise<void> {
   process.stdout.write(`skills-over-mcp smoke client (${args.http ? 'http' : 'stdio'}${args.adversarial ? ', adversarial' : ''})\n`);
   const client = await connect(args);
   try {
-    await runCoreChecks(client);
+    await runCoreChecks(client, args.adversarial);
     if (args.adversarial) {
       await runAdversarialReport(client);
     }
