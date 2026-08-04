@@ -8,13 +8,7 @@
  *   - a custom JSON-RPC method (resources/directory/read) with a Zod schema,
  *   - a custom extension capability in the initialize response.
  */
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  ErrorCode,
-  ListResourcesRequestSchema,
-  McpError,
-  ReadResourceRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { ResourceRegistry, type RegistryOptions } from './resources.js';
 
@@ -22,16 +16,49 @@ export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
 export const DIRECTORY_READ_METHOD = 'resources/directory/read';
 
 /**
- * Custom request schema for resources/directory/read. The SDK's low-level
- * setRequestHandler matches on the `method` literal in this schema, so any
- * Zod object with a literal `method` works as a custom JSON-RPC method.
+ * Read-buffer cap for the stdio transport, in bytes.
+ *
+ * SDK v2 caps the stdio read buffer at 10 MiB by default (v1 buffered unbounded) and
+ * closes the connection when a single message would exceed it. Several adversarial
+ * fixtures are deliberately larger than that — `adv-oversized-payload` is a 16 MiB body
+ * and `adv-walk-budget` serves 3 x 9 MiB files, both of which grow further once
+ * base64-encoded into a JSON-RPC frame — so the default cap would make them unreadable
+ * over stdio, the repo's documented default transport. Serving oversized payloads is the
+ * point of those fixtures, so raise the cap rather than shrink the corpus.
+ *
+ * Both ends must agree: the server writes the frame, the client reads it.
  */
-export const DirectoryReadRequestSchema = z.object({
-  method: z.literal(DIRECTORY_READ_METHOD),
-  params: z.object({
-    uri: z.string(),
-    cursor: z.string().optional(),
-  }),
+export const STDIO_MAX_BUFFER_SIZE = 64 * 1024 * 1024;
+
+/**
+ * Params schema for the custom resources/directory/read method. SDK v2 registers
+ * a non-spec method with `setRequestHandler(method, { params, result? }, handler)`,
+ * so the schema describes the *params* object only — the method name is the first
+ * argument and the SDK validates `request.params` against this schema, handing the
+ * handler the parsed params directly.
+ */
+export const DirectoryReadParamsSchema = z.object({
+  uri: z.string(),
+  cursor: z.string().optional(),
+});
+
+/**
+ * Result schema for resources/directory/read. Purely a typing aid for the handler
+ * return value (the SDK does not validate results against it), but it keeps the
+ * shape declared next to the params.
+ */
+export const DirectoryReadResultSchema = z.object({
+  resources: z.array(
+    z.object({
+      uri: z.string(),
+      name: z.string(),
+      mimeType: z.string(),
+      size: z.number().optional(),
+      description: z.string().optional(),
+      _meta: z.record(z.string(), z.unknown()).optional(),
+    }),
+  ),
+  nextCursor: z.string().optional(),
 });
 
 export interface BuildServerResult {
@@ -74,16 +101,16 @@ export async function buildServer(
   );
 
   // resources/list — enumerate everything (index + SKILL.mds + supporting files + archives).
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  server.setRequestHandler('resources/list', async () => {
     return { resources: registry.listResources() };
   });
 
   // resources/read — text for text files, base64 blob for binaries/archives.
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+  server.setRequestHandler('resources/read', async (request) => {
     const uri = request.params.uri;
     const read = registry.readResource(uri);
     if (!read) {
-      throw new McpError(ErrorCode.InvalidParams, `Unknown resource: ${uri}`);
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown resource: ${uri}`);
     }
     if (read.isText) {
       return {
@@ -96,20 +123,26 @@ export async function buildServer(
   });
 
   // resources/directory/read — direct children of a directory URI (non-recursive).
-  server.setRequestHandler(DirectoryReadRequestSchema, async (request) => {
-    // The SEP says directory URIs are *written* without a trailing slash; it does
-    // not require rejecting a client that supplies one. Be lenient: normalize a
-    // trailing slash before lookup rather than erroring on it.
-    const uri = request.params.uri.replace(/\/+$/, '');
-    const children = registry.directoryChildren(uri);
-    if (!children) {
-      throw new McpError(ErrorCode.InvalidParams, `Unknown directory or not a directory: ${uri}`);
-    }
-    // Pagination: echo any incoming cursor as a no-op; never set nextCursor since
-    // we return all direct children in one page. The field is supported in shape.
-    const result: { resources: typeof children; nextCursor?: string } = { resources: children };
-    return result;
-  });
+  // Custom (non-spec) method: the 3-arg form takes the method name plus explicit
+  // params/result schemas, and the handler receives the PARSED PARAMS (not the
+  // `{ method, params }` envelope). Request metadata lives on `ctx.mcpReq._meta`.
+  server.setRequestHandler(
+    DIRECTORY_READ_METHOD,
+    { params: DirectoryReadParamsSchema, result: DirectoryReadResultSchema },
+    async (params) => {
+      // The SEP says directory URIs are *written* without a trailing slash; it does
+      // not require rejecting a client that supplies one. Be lenient: normalize a
+      // trailing slash before lookup rather than erroring on it.
+      const uri = params.uri.replace(/\/+$/, '');
+      const children = registry.directoryChildren(uri);
+      if (!children) {
+        throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown directory or not a directory: ${uri}`);
+      }
+      // Pagination: echo any incoming cursor as a no-op; never set nextCursor since
+      // we return all direct children in one page. The field is supported in shape.
+      return { resources: children };
+    },
+  );
 
   return { server, registry };
 }

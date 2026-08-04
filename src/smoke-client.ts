@@ -15,19 +15,20 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import {
-  ListResourcesResultSchema,
-  ReadResourceResultSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { z } from 'zod';
-import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION } from './server.js';
+import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION, STDIO_MAX_BUFFER_SIZE } from './server.js';
 import { ADVERSARIAL_CASES } from './adversarial/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Client-side result schema for the custom resources/directory/read method. Kept
+ * separate from the server's export on purpose — this is the client's independent
+ * check of what came back over the wire. A non-spec method ALWAYS needs an explicit
+ * result schema on `client.request()` (only spec methods resolve one by name).
+ */
 const DirectoryReadResultSchema = z.object({
   resources: z.array(
     z.object({
@@ -43,16 +44,16 @@ const DirectoryReadResultSchema = z.object({
 /** Permissive resources/list schema that preserves the SEP metadata + base-MCP size fields. */
 const ListWithMetaSchema = z.object({
   resources: z.array(
-    z
-      .object({
-        uri: z.string(),
-        name: z.string(),
-        mimeType: z.string().optional(),
-        description: z.string().optional(),
-        size: z.number().optional(),
-        _meta: z.record(z.unknown()).optional(),
-      })
-      .passthrough(),
+    // zod 4: `z.looseObject` replaces `z.object(...).passthrough()`, and `z.record`
+    // takes an explicit key type.
+    z.looseObject({
+      uri: z.string(),
+      name: z.string(),
+      mimeType: z.string().optional(),
+      description: z.string().optional(),
+      size: z.number().optional(),
+      _meta: z.record(z.string(), z.unknown()).optional(),
+    }),
   ),
   nextCursor: z.string().optional(),
 });
@@ -100,6 +101,7 @@ async function connect(args: Args): Promise<Client> {
         NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import tsx`.trim(),
       },
       stderr: 'inherit',
+      maxBufferSize: STDIO_MAX_BUFFER_SIZE,
     });
     await client.connect(transport);
     process.stdout.write('Connected over stdio (spawned tsx src/stdio.ts)\n');
@@ -108,7 +110,7 @@ async function connect(args: Args): Promise<Client> {
 }
 
 async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; mimeType?: string; isBlob: boolean }> {
-  const res = await client.request({ method: 'resources/read', params: { uri } }, ReadResourceResultSchema);
+  const res = await client.request({ method: 'resources/read', params: { uri } });
   const content = res.contents[0];
   if (content && 'text' in content && typeof content.text === 'string') {
     return { bytes: Buffer.from(content.text, 'utf8'), mimeType: content.mimeType, isBlob: false };
@@ -147,7 +149,7 @@ async function runCoreChecks(client: Client): Promise<IndexDoc> {
   check('extension declares directoryRead: true', ext?.directoryRead === true);
 
   // resources/list
-  const list = await client.request({ method: 'resources/list', params: {} }, ListResourcesResultSchema);
+  const list = await client.request({ method: 'resources/list', params: {} });
   const uris = new Set(list.resources.map((r) => r.uri));
   check('resources/list returns the index', uris.has('skill://index.json'), `${list.resources.length} resources`);
   const hasSkillMd = [...uris].some((u) => u.endsWith('/SKILL.md'));
@@ -297,6 +299,33 @@ async function runAdversarialReport(client: Client): Promise<void> {
     }
     process.stdout.write(
       `${c.key} | ${c.sepClause} | Den ${c.denItem} | MUST ${c.expectedAction.toUpperCase()}: ${c.oracle}\n`,
+    );
+  }
+
+  // Buffer-cap regression guard: SDK v2 caps the stdio read buffer (default 10 MiB) and
+  // kills the connection when a single frame exceeds it, so the oversized fixtures only
+  // survive because both ends set STDIO_MAX_BUFFER_SIZE. Nothing else in this gate pulls a
+  // frame over 10 MiB -- adv-oversized-payload is skipped above and adv-walk-budget's bulk
+  // lives in supporting files the loop never touches -- so without this check the cap could
+  // be removed and the smoke run would still pass.
+  //
+  // The threshold is on the DECODED payload (9 MiB), not the frame: that 9 MiB rides the
+  // wire as ~12.6 MiB of base64, which is what clears the 10 MiB default cap. Reading it
+  // at all proves the raised cap is in effect -- with the default, the read fails and the
+  // whole connection closes. Uses part-1.bin rather than the 16 MiB adv-oversized-payload
+  // so the gate stays cheap.
+  const walkBudgetPart = 'skill://adv-walk-budget/data/part-1.bin';
+  if (advEntries.some((e) => entryMatchUri(e).includes('adv-walk-budget'))) {
+    let partBytes = 0;
+    try {
+      partBytes = (await readBytes(client, walkBudgetPart)).bytes.length;
+    } catch (err) {
+      process.stdout.write(`  read failed: ${(err as Error).message}\n`);
+    }
+    check(
+      'oversized frame survives the stdio buffer cap (adv-walk-budget part-1.bin)',
+      partBytes >= 9 * 1024 * 1024,
+      `${partBytes} bytes decoded (~${Math.round((partBytes * 4) / 3 / 1024 / 1024)} MiB base64 on the wire)`,
     );
   }
 
