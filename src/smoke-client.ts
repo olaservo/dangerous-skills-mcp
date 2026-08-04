@@ -18,7 +18,13 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { z } from 'zod';
-import { DIRECTORY_READ_METHOD, SKILLS_EXTENSION, STDIO_MAX_BUFFER_SIZE } from './server.js';
+import {
+  DIRECTORY_READ_METHOD,
+  SKILLS_EXTENSION,
+  SKILLS_GET_METHOD,
+  SKILLS_LIST_METHOD,
+  STDIO_MAX_BUFFER_SIZE,
+} from './server.js';
 import { ADVERSARIAL_CASES } from './adversarial/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -121,23 +127,30 @@ async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; 
   throw new Error(`resources/read returned no readable content for ${uri}`);
 }
 
-interface IndexDoc {
-  skills: Array<{
-    url?: string;
-    digest?: string;
-    frontmatter: Record<string, unknown>;
-    archives?: Array<{ url: string; mimeType: string; digest: string }>;
-  }>;
+// ---- SEP-2640 skills/list + skills/get shapes ----
+
+const ResourceDigestSchema = z.object({ uri: z.string(), digest: z.string() });
+const SkillEntrySchema = z.object({
+  uri: z.string(),
+  // zod 4: `z.record` takes an explicit key type.
+  frontmatter: z.record(z.string(), z.unknown()),
+  resources: z.array(ResourceDigestSchema).optional(),
+});
+const SkillsListResultSchema = z.object({
+  skills: z.array(SkillEntrySchema),
+  nextCursor: z.string().optional(),
+});
+const SkillsGetResultSchema = z.object({ skill: SkillEntrySchema });
+type SkillEntry = z.infer<typeof SkillEntrySchema>;
+
+async function skillsList(client: Client, cursor?: string): Promise<{ skills: SkillEntry[]; nextCursor?: string }> {
+  return client.request(
+    { method: SKILLS_LIST_METHOD, params: cursor ? { cursor } : {} },
+    SkillsListResultSchema,
+  );
 }
 
-type IndexEntry = IndexDoc['skills'][number];
-
-/** The URI we match a fixture on: its SKILL.md url, or its first archive url (archive-only). */
-function entryMatchUri(e: IndexEntry): string {
-  return e.url ?? e.archives?.[0]?.url ?? '';
-}
-
-async function runCoreChecks(client: Client): Promise<IndexDoc> {
+async function runCoreChecks(client: Client, adversarial: boolean): Promise<void> {
   process.stdout.write('\n== Core conformance checks ==\n');
 
   // Capability advertisement.
@@ -148,55 +161,84 @@ async function runCoreChecks(client: Client): Promise<IndexDoc> {
   check('initialize advertises Skills extension capability', !!ext, JSON.stringify(ext ?? caps?.extensions));
   check('extension declares directoryRead: true', ext?.directoryRead === true);
 
-  // resources/list
+  // resources/list — skills are individually addressable (skill://index.json is retired).
   const list = await client.request({ method: 'resources/list', params: {} });
   const uris = new Set(list.resources.map((r) => r.uri));
-  check('resources/list returns the index', uris.has('skill://index.json'), `${list.resources.length} resources`);
-  const hasSkillMd = [...uris].some((u) => u.endsWith('/SKILL.md'));
-  const hasArchive = [...uris].some((u) => u.endsWith('.tar.gz'));
-  check('resources/list includes SKILL.md resources', hasSkillMd);
-  check('resources/list includes archive resources', hasArchive);
+  check('resources/list returns resources', list.resources.length > 0, `${list.resources.length} resources`);
+  check('resources/list has NO skill://index.json (retired for skills/list)', !uris.has('skill://index.json'));
+  check('resources/list includes SKILL.md resources', [...uris].some((u) => u.endsWith('/SKILL.md')));
 
-  // Read index.json
-  const indexRead = await readBytes(client, 'skill://index.json');
-  const index = JSON.parse(indexRead.bytes.toString('utf8')) as IndexDoc;
-  check('skill://index.json parses with a skills array', Array.isArray(index.skills), `${index.skills?.length} skills`);
-  process.stdout.write(`  Skill count from index.json: ${index.skills.length}\n`);
+  // skills/list — the SEP enumeration method (first page).
+  const listed = await skillsList(client);
+  check('skills/list returns a skills array', Array.isArray(listed.skills), `${listed.skills.length} skills (first page)`);
 
-  // Pick a faithful, individually-addressable (url+digest) skill for the core checks.
-  // Archive-only fixtures (refunds) deliberately omit url/digest, so skip them here.
-  const entry = index.skills.find(
-    (s) => s.url && s.digest && !s.url.includes('refunds') && !s.url.includes('adv-'),
+  // Pick a faithful entry with a complete resources set, preferring one with a supporting file.
+  const faithful = listed.skills.filter(
+    (s) => s.resources && s.resources.length > 0 && !s.uri.includes('adv-') && !s.uri.includes('refunds'),
   );
-  if (!entry || !entry.url || !entry.digest) {
-    check('a faithful url+digest skill exists for core checks', false, 'none found in index');
-    return index;
+  const entry = faithful.find((s) => (s.resources?.length ?? 0) > 1) ?? faithful[0];
+  if (!entry || !entry.resources) {
+    check('a faithful entry with a resources set exists', false, 'none found in skills/list');
+    return;
   }
-  const entryUrl = entry.url;
-  const entryDigest = entry.digest;
 
-  // Read one SKILL.md and verify digest against index.
-  const skillRead = await readBytes(client, entryUrl);
+  // SEP §Resources: the set MUST include an item matching the top-level SKILL.md uri.
+  const skillMdDigest = entry.resources.find((r) => r.uri === entry.uri);
+  check('entry.resources includes an item for the SKILL.md uri', !!skillMdDigest);
+
+  // Verify the SKILL.md bytes against its per-file digest.
+  const skillRead = await readBytes(client, entry.uri);
   const computed = sha256(skillRead.bytes);
   check(
-    `SKILL.md sha256 matches index digest (${entryUrl})`,
-    computed === entryDigest,
-    `index=${entryDigest.slice(0, 23)}… computed=${computed.slice(0, 23)}…`,
+    `SKILL.md digest matches its resources entry (${entry.uri})`,
+    !!skillMdDigest && computed === skillMdDigest.digest,
+    `entry=${(skillMdDigest?.digest ?? '').slice(0, 23)}… computed=${computed.slice(0, 23)}…`,
   );
 
-  // resources/read MUST work from URI alone (independent of index) — re-read it directly.
-  const direct = await readBytes(client, entryUrl);
-  check('SKILL.md readable from its URI alone (not via index)', direct.bytes.length > 0);
+  // Verify a SUPPORTING file against its per-file digest — the whole-skill integrity the
+  // v1 SEP adds over the old SKILL.md-only digest.
+  const supporting = entry.resources.find((r) => r.uri !== entry.uri);
+  if (supporting) {
+    const sup = await readBytes(client, supporting.uri);
+    check(`supporting-file digest matches its resources entry (${supporting.uri})`, sha256(sup.bytes) === supporting.digest);
+  } else {
+    process.stdout.write('  (picked entry has no supporting file; per-file digest check skipped)\n');
+  }
+
+  // resources/read MUST work from the URI alone.
+  const direct = await readBytes(client, entry.uri);
+  check('SKILL.md readable from its URI alone', direct.bytes.length > 0);
+
+  // skills/get — same entry by URI, listed or not.
+  const got = await client.request({ method: SKILLS_GET_METHOD, params: { uri: entry.uri } }, SkillsGetResultSchema);
+  check('skills/get returns the same entry by URI', got.skill.uri === entry.uri);
+  check(
+    'skills/get carries the same resources set as skills/list',
+    JSON.stringify(got.skill.resources) === JSON.stringify(entry.resources),
+  );
+
+  // skills/get on an unknown URI MUST error with -32602.
+  let getErrored = false;
+  try {
+    await client.request(
+      { method: SKILLS_GET_METHOD, params: { uri: 'skill://nonexistent/SKILL.md' } },
+      SkillsGetResultSchema,
+    );
+  } catch (err) {
+    getErrored = true;
+    const code = (err as { code?: number }).code;
+    check('skills/get on unknown URI errors with -32602', code === -32602, `code=${code}`);
+  }
+  if (!getErrored) check('skills/get on unknown URI errors with -32602', false, 'no error thrown');
 
   // resources/directory/read on the skill dir.
-  const skillDirUri = entryUrl.replace(/\/SKILL\.md$/, '');
+  const skillDirUri = entry.uri.replace(/\/SKILL\.md$/, '');
   const dir = await client.request(
     { method: DIRECTORY_READ_METHOD, params: { uri: skillDirUri } },
     DirectoryReadResultSchema,
   );
-  const dirHasSkillMd = dir.resources.some((r) => r.uri === entryUrl);
   check(`resources/directory/read lists direct children of ${skillDirUri}`, dir.resources.length > 0, `${dir.resources.length} children`);
-  check('directory listing includes SKILL.md as a direct child', dirHasSkillMd);
+  check('directory listing includes SKILL.md as a direct child', dir.resources.some((r) => r.uri === entry.uri));
 
   // directory/read on a non-directory MUST be an error (-32602).
   let errored = false;
@@ -212,26 +254,35 @@ async function runCoreChecks(client: Client): Promise<IndexDoc> {
   }
   if (!errored) check('directory/read on unknown URI errors with -32602', false, 'no error thrown');
 
-  // Read one archive and verify its digest.
-  const archives = entry.archives ?? [];
-  const archive = archives.find((a) => a.url.endsWith('.tar.gz')) ?? archives[0];
-  if (archive) {
-    const archiveRead = await readBytes(client, archive.url);
-    check('archive returned as base64 blob', archiveRead.isBlob, archiveRead.mimeType);
-    const archiveDigest = sha256(archiveRead.bytes);
-    check(
-      `archive sha256 matches index digest (${archive.url})`,
-      archiveDigest === archive.digest,
-      `index=${archive.digest.slice(0, 23)}… computed=${archiveDigest.slice(0, 23)}…`,
+  // Cursor scope: the adversarial overflow cursor is fixture-scoped, so a crafted
+  // cursor on an unknown directory MUST still error (in BOTH profiles), and in the
+  // faithful profile a crafted skills/list cursor MUST NOT conjure synthetic entries
+  // that skills/get and resources/read cannot satisfy.
+  let cursorErrored = false;
+  try {
+    await client.request(
+      { method: DIRECTORY_READ_METHOD, params: { uri: 'skill://nonexistent/nope', cursor: 'adv-overflow-1' } },
+      DirectoryReadResultSchema,
     );
-  } else {
-    check('faithful skill offers an archive', false, `${entryUrl} has no archives`);
+  } catch (err) {
+    cursorErrored = true;
+    const code = (err as { code?: number }).code;
+    check('directory/read on unknown URI + crafted overflow cursor errors with -32602', code === -32602, `code=${code}`);
+  }
+  if (!cursorErrored) check('directory/read on unknown URI + crafted overflow cursor errors with -32602', false, 'no error thrown');
+
+  if (!adversarial) {
+    const crafted = await skillsList(client, 'adv-overflow-1');
+    check(
+      'crafted overflow cursor in faithful mode yields no synthetic entries and no nextCursor',
+      !crafted.nextCursor && crafted.skills.every((s) => !s.uri.includes('adv-enumeration-exhaustion')),
+      `${crafted.skills.length} skills, nextCursor=${String(crafted.nextCursor)}`,
+    );
   }
 
-  // SEP Resource Metadata SHOULD + base-MCP `size`: the SKILL.md list entry should
-  // carry frontmatter-derived name/description, a size, and frontmatter under _meta.
+  // SEP Resource Metadata SHOULD + base-MCP `size` on the SKILL.md list item.
   const listFull = await client.request({ method: 'resources/list', params: {} }, ListWithMetaSchema);
-  const skillItem = listFull.resources.find((r) => r.uri === entryUrl);
+  const skillItem = listFull.resources.find((r) => r.uri === entry.uri);
   if (skillItem) {
     const fmName = typeof entry.frontmatter.name === 'string' ? entry.frontmatter.name : undefined;
     check('SKILL.md list entry name == frontmatter.name', !!fmName && skillItem.name === fmName, `name=${skillItem.name}`);
@@ -241,66 +292,50 @@ async function runCoreChecks(client: Client): Promise<IndexDoc> {
     const hasMeta = !!skillItem._meta && typeof skillItem._meta[metaKey] === 'object';
     check('SKILL.md list entry exposes frontmatter under _meta prefix', hasMeta);
   } else {
-    check('SKILL.md present in resources/list with metadata', false, entryUrl);
+    check('SKILL.md present in resources/list with metadata', false, entry.uri);
   }
-  const archiveItem = listFull.resources.find((r) => r.uri.endsWith('.tar.gz'));
-  check('archive list entry reports a size', typeof archiveItem?.size === 'number' && archiveItem.size > 0, `size=${archiveItem?.size}`);
-
-  return index;
 }
 
 async function runAdversarialReport(client: Client): Promise<void> {
   process.stdout.write('\n== Adversarial fixtures (documented oracle) ==\n');
   process.stdout.write(
     'No released host consumes skills-over-MCP yet, so these are not executed against a real\n' +
-      'host. For each fixture we fetch it and print what a SEP-conformant host MUST do.\n\n',
+      'host. For each fixture we confirm it is served and print what a SEP-conformant host MUST do.\n' +
+      'NOTE: archive fixtures exercise a DEFERRED feature — archives are NOT in the v1 SEP.\n\n',
   );
 
-  const indexRead = await readBytes(client, 'skill://index.json');
-  const index = JSON.parse(indexRead.bytes.toString('utf8')) as IndexDoc;
-  const advEntries = index.skills.filter((s) => {
-    const u = entryMatchUri(s);
-    return u.includes('adv-') || u.includes('refunds');
-  });
+  // Build the set of served URIs to match fixtures on: skills/list entry URIs + their
+  // resources URIs (FIRST PAGE ONLY — do not follow nextCursor; adv-enumeration-exhaustion
+  // never ends), plus resources/list URIs (archive blobs, escape children, archive-only refunds).
+  const listed = await skillsList(client);
+  const resList = await client.request({ method: 'resources/list', params: {} });
+  const servedUris = new Set<string>();
+  for (const s of listed.skills) {
+    servedUris.add(s.uri);
+    for (const r of s.resources ?? []) servedUris.add(r.uri);
+  }
+  for (const r of resList.resources) servedUris.add(r.uri);
+  const allUris = [...servedUris];
 
-  if (advEntries.length === 0) {
+  if (!allUris.some((u) => u.includes('adv-') || u.includes('refunds'))) {
     process.stdout.write(
-      'No adversarial fixtures in the index. Re-run with --adversarial so the spawned server\n' +
+      'No adversarial fixtures served. Re-run with --adversarial so the spawned server\n' +
         'serves the adversarial profile (stdio mode does this automatically).\n',
     );
     return;
   }
 
-  // The fixture → SEP → Den → oracle mapping is the SINGLE source in
-  // adversarial/catalog.ts; print it straight from there (no second hand-synced
-  // copy to drift). Each case's `key` is the substring we match served URIs on.
+  // The fixture → SEP → oracle mapping is the SINGLE source in adversarial/catalog.ts.
   process.stdout.write('case | SEP clause | Den item | expected conformant-host action\n');
   process.stdout.write('--------------------------------------------------------------------\n');
   for (const c of ADVERSARIAL_CASES) {
-    const matches = advEntries.filter((e) => entryMatchUri(e).includes(c.key));
-    if (matches.length === 0) continue;
-    // Fetch one matching fixture to prove it is served. Skip the content-rotation
-    // fixture (so its read counter stays clean for the live demo below) and
-    // archive-only entries (no individually-addressable url).
-    const first = matches[0];
-    // Skip heavy/stateful fetches: content-rotation (keep its read counter clean for
-    // the live demo below) and oversized-payload (don't pull ~16 MiB just to prove it
-    // is served — its size is visible in resources/list).
-    if (
-      first.url &&
-      !first.url.includes('adv-content-rotation') &&
-      !first.url.includes('adv-oversized-payload')
-    ) {
-      try {
-        await readBytes(client, first.url);
-      } catch {
-        /* still print the oracle below */
-      }
-    }
+    if (!allUris.some((u) => u.includes(c.key))) continue;
     process.stdout.write(
       `${c.key} | ${c.sepClause} | Den ${c.denItem} | MUST ${c.expectedAction.toUpperCase()}: ${c.oracle}\n`,
     );
   }
+
+  // --- Live demonstrations ---
 
   // Buffer-cap regression guard: SDK v2 caps the stdio read buffer (default 10 MiB) and
   // kills the connection when a single frame exceeds it, so the oversized fixtures only
@@ -315,7 +350,7 @@ async function runAdversarialReport(client: Client): Promise<void> {
   // whole connection closes. Uses part-1.bin rather than the 16 MiB adv-oversized-payload
   // so the gate stays cheap.
   const walkBudgetPart = 'skill://adv-walk-budget/data/part-1.bin';
-  if (advEntries.some((e) => entryMatchUri(e).includes('adv-walk-budget'))) {
+  if (allUris.some((u) => u.includes('adv-walk-budget'))) {
     let partBytes = 0;
     try {
       partBytes = (await readBytes(client, walkBudgetPart)).bytes.length;
@@ -329,44 +364,86 @@ async function runAdversarialReport(client: Client): Promise<void> {
     );
   }
 
-  // Archive-only fidelity (Den A1/A2): the refunds pair MUST omit url/digest and a
-  // direct resources/read of their SKILL.md URI MUST miss (not individually addressable).
-  const refunds = advEntries.filter((e) => entryMatchUri(e).includes('refunds'));
-  if (refunds.length > 0) {
-    const allArchiveOnly = refunds.every((e) => !e.url && !e.digest && (e.archives?.length ?? 0) > 0);
-    check('archive-only: refunds entries omit url/digest and carry archives', allArchiveOnly);
-    // The unpacked SKILL.md would live at skill://<authority>/SKILL.md; it must NOT be
-    // individually readable from the server (host must unpack the archive to get it).
-    const probe = 'skill://acme/billing/refunds/SKILL.md';
-    let missed = false;
-    try {
-      await readBytes(client, probe);
-    } catch {
-      missed = true;
-    }
-    check(`archive-only: direct resources/read of ${probe} misses (host must unpack)`, missed);
+  // content-rotation: read the SKILL.md twice; digests differ (TOCTOU).
+  const rotationUri = allUris.find((u) => u.includes('adv-content-rotation') && u.endsWith('/SKILL.md'));
+  if (rotationUri) {
+    const r1 = await readBytes(client, rotationUri);
+    const r2 = await readBytes(client, rotationUri);
+    const changed = sha256(r1.bytes) !== sha256(r2.bytes);
+    check('content-rotation: SKILL.md bytes differ between read #1 and #2 (TOCTOU)', changed);
   }
 
-  // url-only fidelity: cross-server-read MUST carry url/digest and offer no archive.
-  const urlOnly = advEntries.find((e) => (e.url ?? '').includes('adv-cross-server-read'));
-  if (urlOnly) {
+  // directory-walk-escape: the skill root lists a child that escapes the subtree, and a
+  // read of that child MUST miss (it is not a served resource / not in `resources`).
+  const escRoot = 'skill://adv-directory-walk-escape';
+  if (allUris.some((u) => u.includes('adv-directory-walk-escape'))) {
+    try {
+      const dir = await client.request(
+        { method: DIRECTORY_READ_METHOD, params: { uri: escRoot } },
+        DirectoryReadResultSchema,
+      );
+      const escapeChild = dir.resources.find((r) => r.uri.includes('/../') || !r.uri.startsWith(`${escRoot}/`));
+      check('directory-walk-escape: a listed child escapes the skill subtree', !!escapeChild, escapeChild?.uri);
+      if (escapeChild) {
+        let missed = false;
+        try {
+          await readBytes(client, escapeChild.uri);
+        } catch {
+          missed = true;
+        }
+        check('directory-walk-escape: reading the escaping child misses (host MUST reject)', missed);
+      }
+    } catch {
+      /* fixture not served in this profile */
+    }
+  }
+
+  // name-collision: >1 entry shares frontmatter.name "review-staged" at distinct URIs
+  // (the adv-name-collision fixture plus the faithful corpus skills of that name).
+  const collides = listed.skills.filter((s) => s.frontmatter.name === 'review-staged');
+  if (collides.length > 1) {
+    const distinct = new Set(collides.map((s) => s.uri)).size === collides.length;
+    const hasFixture = collides.some((s) => s.uri.includes('adv-name-collision'));
     check(
-      'url-only: cross-server-read carries url/digest and omits archives',
-      !!urlOnly.url && !!urlOnly.digest && (urlOnly.archives?.length ?? 0) === 0,
+      'name-collision: >1 entry named "review-staged" (incl. the fixture), each at a distinct URI',
+      distinct && hasFixture,
+      `${collides.length} entries`,
     );
   }
 
-  // Demonstrate content-rotation live: read the SKILL.md twice; digests must differ
-  // (read #1 returns the benign body; read #2 returns the rotated/TOCTOU body).
-  const rotation = advEntries.find((e) => (e.url ?? '').includes('adv-content-rotation'));
-  if (rotation && rotation.url) {
-    const r1 = await readBytes(client, rotation.url);
-    const r2 = await readBytes(client, rotation.url);
-    const changed = sha256(r1.bytes) !== sha256(r2.bytes);
-    check('content-rotation: SKILL.md bytes differ between read #1 and read #2 (TOCTOU)', changed);
-    process.stdout.write(
-      `  content-rotation demonstrated: read#1 vs read#2 bytes ${changed ? 'DIFFER' : 'match'} ` +
-        `(a conformant host MUST reject the rotated read).\n`,
+  // enumeration-exhaustion: follow nextCursor a BOUNDED number of times; it never ends.
+  if (allUris.some((u) => u.includes('adv-enumeration-exhaustion'))) {
+    const CAP = 5;
+    let cursor = listed.nextCursor;
+    let pages = 0;
+    while (cursor && pages < CAP) {
+      const next = await skillsList(client, cursor);
+      cursor = next.nextCursor;
+      pages++;
+    }
+    check(
+      `enumeration-exhaustion: skills/list still paginating after ${CAP} extra pages (never terminates)`,
+      pages === CAP && !!cursor,
+      'a host MUST cap how far it follows the cursor',
+    );
+
+    // The same fixture's directory reads also paginate without end.
+    const root = 'skill://adv-enumeration-exhaustion';
+    const dr0 = await client.request({ method: DIRECTORY_READ_METHOD, params: { uri: root } }, DirectoryReadResultSchema);
+    let dcursor = dr0.nextCursor;
+    let dpages = 0;
+    while (dcursor && dpages < CAP) {
+      const dn = await client.request(
+        { method: DIRECTORY_READ_METHOD, params: { uri: root, cursor: dcursor } },
+        DirectoryReadResultSchema,
+      );
+      dcursor = dn.nextCursor;
+      dpages++;
+    }
+    check(
+      `enumeration-exhaustion: resources/directory/read still paginating after ${CAP} extra pages`,
+      dpages === CAP && !!dcursor,
+      'both enumeration surfaces are unbounded',
     );
   }
 }
@@ -376,7 +453,7 @@ async function main(): Promise<void> {
   process.stdout.write(`skills-over-mcp smoke client (${args.http ? 'http' : 'stdio'}${args.adversarial ? ', adversarial' : ''})\n`);
   const client = await connect(args);
   try {
-    await runCoreChecks(client);
+    await runCoreChecks(client, args.adversarial);
     if (args.adversarial) {
       await runAdversarialReport(client);
     }

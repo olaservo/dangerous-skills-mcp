@@ -1,21 +1,29 @@
 /**
  * resources.ts — The resource registry. Turns the loaded corpus (+ optional
  * adversarial profile) into:
- *   - a `skill://index.json` document,
- *   - per-skill archives (.tar.gz + .zip),
- *   - a flat map of readable resources (index, each SKILL.md, each supporting
- *     file, each archive),
+ *   - the SEP-2640 skill entries served by `skills/list` and `skills/get`,
+ *   - a flat map of readable resources (each SKILL.md, each supporting file, and any
+ *     crafted archive blob a deferred fixture supplies),
  *   - a directory tree for `resources/directory/read`.
  *
- * SEP MUST honored: a skill is readable from its URI alone whether or not it is
- * in the index — the resource map is the source of truth for reads.
+ * SEP model: skills are individually addressable resources. Enumeration is a method
+ * (`skills/list`), not a `skill://index.json` document, and each entry carries a
+ * COMPLETE per-file `resources` digest set. A skill is readable from its URI alone
+ * whether or not it appears in a listing — the resource map is the source of truth
+ * for reads, and `skills/get` answers for any served skill by URI.
+ *
+ * Archive distribution is a DEFERRED feature: it is NOT part of the v1 SEP (see the
+ * SEP's "Appendix: Deferred Features"). It is retained in this corpus on purpose — the
+ * archive-safety fixtures are a research contribution and a landing spot should archives
+ * be reconsidered. Faithful skills pack no archives; only crafted deferred fixtures supply
+ * archive blobs, served as ordinary resource bytes. Archive blobs never appear in a
+ * `skills/list` entry (the v1 listing has no archive form), and archive-only skills are
+ * excluded from the listing entirely (they cannot be expressed in the individual-file model).
  */
-import { archiveUri, fileUri, loadCorpus, skillAuthority, sha256, type Skill, type SkillFile } from './corpus.js';
-import { packTarGz, packZip, type ArchiveBlob } from './archives.js';
-import { buildIndex, indexJsonBytes, type ServedSkill, type SkillsIndex } from './index-json.js';
+import { archiveUri, fileUri, loadCorpus, skillAuthority, type Skill } from './corpus.js';
+import type { ArchiveBlob } from './archives.js';
+import { buildSkillEntry, type SkillEntry } from './skills.js';
 import { buildAdversarialFixtures, type AdversarialFixture } from './adversarial/index.js';
-
-export const INDEX_URI = 'skill://index.json';
 
 /** A readable resource (text or blob). */
 export interface ReadableResource {
@@ -51,6 +59,12 @@ export interface ResourceListItem {
   _meta?: Record<string, unknown>;
 }
 
+/** A page of `skills/list` results. */
+export interface SkillsPage {
+  skills: SkillEntry[];
+  nextCursor?: string;
+}
+
 /** Reverse-domain prefix for skill-resource _meta keys (SEP-2640 Resource Metadata). */
 export const SKILLS_META_PREFIX = 'io.modelcontextprotocol.skills/';
 
@@ -62,14 +76,22 @@ export interface RegistryOptions {
 }
 
 const DIRECTORY_MIME = 'inode/directory';
+/** Cursor prefix for the adv-enumeration-exhaustion endless-pagination tail. */
+const OVERFLOW_CURSOR = 'adv-overflow-';
 
 export class ResourceRegistry {
   private resources = new Map<string, ReadableResource>();
   private directories = new Map<string, DirectoryNode>();
   private readCounts = new Map<string, number>();
-  private index!: SkillsIndex;
-  private served: ServedSkill[] = [];
+  /** Directory children that are intentionally unreadable / out-of-subtree (adv-directory-walk-escape). */
+  private escapeChildren = new Map<string, string>();
+  private entries: SkillEntry[] = [];
+  private entryByUri = new Map<string, SkillEntry>();
+  private skills: Skill[] = [];
   private fixtures: AdversarialFixture[] = [];
+  private hasPaginationOverflow = false;
+  /** Skill-root URI whose directory reads also paginate without end (adv-enumeration-exhaustion). */
+  private overflowDirRoot?: string;
 
   static async build(opts: RegistryOptions = {}): Promise<ResourceRegistry> {
     const reg = new ResourceRegistry();
@@ -84,45 +106,30 @@ export class ResourceRegistry {
       this.fixtures = await buildAdversarialFixtures();
     }
 
-    // Pack archives + register files for every served skill.
     for (const skill of faithful) {
-      await this.addSkill(skill);
+      this.addSkill(skill);
     }
     for (const fx of this.fixtures) {
-      await this.addSkill(fx.skill, fx);
+      this.addSkill(fx.skill, fx);
     }
 
-    // Build the index from the served skills/archives, then register it.
-    this.index = buildIndex(this.served);
-    const indexBytes = indexJsonBytes(this.index);
-    this.resources.set(INDEX_URI, {
-      uri: INDEX_URI,
-      name: 'index.json',
-      mimeType: 'application/json',
-      bytes: indexBytes,
-      isText: true,
-    });
+    // Build the skill-entry catalog (skills/list + skills/get), ordered by URI.
+    // Archive-only skills (deferred feature) cannot be expressed in the individual-file
+    // listing, so they are excluded from the catalog.
+    this.entries = this.skills
+      .filter((s) => (s.delivery ?? 'individual') !== 'archive-only')
+      .map(buildSkillEntry)
+      .sort((a, b) => a.uri.localeCompare(b.uri));
+    for (const e of this.entries) this.entryByUri.set(e.uri, e);
   }
 
-  private async addSkill(skill: Skill, fixture?: AdversarialFixture): Promise<void> {
+  private addSkill(skill: Skill, fixture?: AdversarialFixture): void {
     const auth = skillAuthority(skill);
-    const delivery = skill.delivery ?? 'both';
+    const delivery = skill.delivery ?? 'individual';
 
-    // Archives: url-only skills offer none; otherwise use the fixture's crafted
-    // archives if present, else pack faithfully.
-    let archives: ArchiveBlob[];
-    if (delivery === 'url-only') {
-      archives = [];
-    } else if (fixture?.archives && fixture.archives.length > 0) {
-      archives = fixture.archives;
-    } else {
-      // supporting-file-digest-swap may want a divergent archive copy.
-      const archiveOverride = (skill as Skill & { archiveHelperOverride?: Buffer }).archiveHelperOverride;
-      const skillForArchive = archiveOverride ? withArchiveHelper(skill, archiveOverride) : skill;
-      archives = [await packTarGz(skillForArchive), await packZip(skillForArchive)];
-    }
-
-    // Register archive blob resources.
+    // Archives are a DEFERRED feature (not in the v1 SEP): faithful skills pack none.
+    // Only a crafted deferred fixture supplies archive blobs, served as ordinary bytes.
+    const archives: ArchiveBlob[] = fixture?.archives ?? [];
     for (const a of archives) {
       const uri = archiveUri(skill, a.kind);
       this.resources.set(uri, {
@@ -134,48 +141,67 @@ export class ResourceRegistry {
       });
     }
 
-    // Register each served file as a readable resource — UNLESS the skill is
-    // archive-only, where the SEP says files are not individually addressable on
-    // the server (the host must unpack the archive to address them). So we serve
-    // only the archive blob; a direct resources/read of skill://<auth>/SKILL.md
-    // and resources/directory/read of skill://<auth> both correctly miss (-32602).
-    if (delivery !== 'archive-only') {
-      for (const file of skill.files) {
-        const uri = fileUri(skill, file.relPath);
-        let bytes: Buffer | ((readCount: number) => Buffer) = file.bytes;
-        if (fixture?.rotateSkillMd && file.relPath === 'SKILL.md') {
-          bytes = fixture.rotateSkillMd;
-        }
-        const isSkillMd = file.relPath === 'SKILL.md';
-        // SEP Resource Metadata: a SKILL.md resource SHOULD carry name/description
-        // from frontmatter and MAY expose the rest under the reserved _meta prefix.
-        this.resources.set(uri, {
-          uri,
-          name: isSkillMd ? skill.name : file.relPath,
-          mimeType: file.mimeType,
-          bytes,
-          isText: file.isText,
-          ...(isSkillMd
-            ? {
-                description:
-                  typeof skill.frontmatter.description === 'string'
-                    ? skill.frontmatter.description
-                    : undefined,
-                meta: { [`${SKILLS_META_PREFIX}frontmatter`]: skill.frontmatter },
-              }
-            : {}),
-        });
-        this.registerDirectoriesForFile(auth, file.relPath);
-      }
+    // Archive-only skills (a deferred-archive fixture, e.g. refunds) are not
+    // individually addressable: serve only the archive blob, register no files, and
+    // leave them out of the skills/list catalog (built in init from non-archive-only skills).
+    if (delivery === 'archive-only') {
+      this.skills.push(skill);
+      return;
     }
 
-    this.served.push({ skill, archives });
+    // Register each served file as a readable resource + build the directory tree.
+    for (const file of skill.files) {
+      const uri = fileUri(skill, file.relPath);
+      let bytes: Buffer | ((readCount: number) => Buffer) = file.bytes;
+      if (fixture?.rotateSkillMd && file.relPath === 'SKILL.md') {
+        bytes = fixture.rotateSkillMd;
+      }
+      const isSkillMd = file.relPath === 'SKILL.md';
+      // SEP Resource Metadata: a SKILL.md resource SHOULD carry name/description from
+      // frontmatter and MAY expose the rest under the reserved _meta prefix.
+      this.resources.set(uri, {
+        uri,
+        name: isSkillMd ? skill.name : file.relPath,
+        mimeType: file.mimeType,
+        bytes,
+        isText: file.isText,
+        ...(isSkillMd
+          ? {
+              description:
+                typeof skill.frontmatter.description === 'string'
+                  ? skill.frontmatter.description
+                  : undefined,
+              meta: { [`${SKILLS_META_PREFIX}frontmatter`]: skill.frontmatter },
+            }
+          : {}),
+      });
+      this.registerDirectoriesForFile(auth, file.relPath);
+    }
+
+    // adv-directory-walk-escape: list a child whose URI escapes the skill subtree.
+    // It is NOT a served resource and NOT in the entry's `resources`, so a host that
+    // fetches it gets -32602, and a host checking against `resources` rejects it.
+    const escapeChild = (skill as Skill & { directoryEscapeChildUri?: string }).directoryEscapeChildUri;
+    if (escapeChild) {
+      const rootUri = `skill://${auth}`;
+      this.ensureDir(rootUri, auth.split('/').pop() ?? auth);
+      this.linkChild(rootUri, escapeChild);
+      this.escapeChildren.set(escapeChild, escapeChild.split('/').pop() ?? 'escape');
+    }
+
+    // adv-enumeration-exhaustion: mark that skills/list — and this skill's directory
+    // reads — must paginate without end.
+    if ((skill as Skill & { paginationOverflow?: boolean }).paginationOverflow) {
+      this.hasPaginationOverflow = true;
+      this.overflowDirRoot = `skill://${auth}`;
+    }
+
+    this.skills.push(skill);
   }
 
   /** Ensure directory nodes exist for every path segment of a file, and link children. */
   private registerDirectoriesForFile(auth: string, relPath: string): void {
     const segments = relPath.split('/');
-    // The skill root directory is skill://<auth>
     let parentUri = `skill://${auth}`;
     this.ensureDir(parentUri, auth.split('/').pop() ?? auth);
 
@@ -209,18 +235,53 @@ export class ResourceRegistry {
   /** Project a stored resource to its list/metadata shape (uri/name/mimeType + size + SEP metadata). */
   private toListItem(r: ReadableResource): ResourceListItem {
     const item: ResourceListItem = { uri: r.uri, name: r.name, mimeType: r.mimeType };
-    // size: byte length for static resources; omitted for rotating (function) bytes.
     if (typeof r.bytes !== 'function') item.size = r.bytes.length;
     if (r.description !== undefined) item.description = r.description;
     if (r.meta !== undefined) item._meta = r.meta;
     return item;
   }
 
-  /** All resources for resources/list (index + SKILL.mds + supporting files + archives). */
+  /** All resources for resources/list (SKILL.mds + supporting files + any archive blobs). */
   listResources(): ResourceListItem[] {
     return [...this.resources.values()]
       .map((r) => this.toListItem(r))
       .sort((a, b) => a.uri.localeCompare(b.uri));
+  }
+
+  /**
+   * `skills/list`: a page of skill entries. Faithful pagination returns every entry
+   * in one page with no cursor. When the adv-enumeration-exhaustion fixture is served,
+   * the first page carries a `nextCursor` into an endless synthetic tail — a host MUST
+   * bound how far it follows.
+   *
+   * The overflow cursor is honored ONLY while the fixture is active: in the faithful
+   * profile a crafted `adv-overflow-N` cursor must not conjure synthetic entries that
+   * `skills/get`/`resources/read` cannot satisfy, so unknown cursors are ignored
+   * (same no-op leniency as directory pagination) and the full faithful page returned.
+   */
+  skillsList(cursor?: string): SkillsPage {
+    if (this.hasPaginationOverflow && cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
+      const n = Number(cursor.slice(OVERFLOW_CURSOR.length)) || 1;
+      return { skills: [this.syntheticOverflowEntry(n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
+    }
+    const page: SkillsPage = { skills: this.entries };
+    if (this.hasPaginationOverflow) page.nextCursor = `${OVERFLOW_CURSOR}1`;
+    return page;
+  }
+
+  /** One benign synthetic entry for the endless-pagination tail. */
+  private syntheticOverflowEntry(n: number): SkillEntry {
+    const uri = `skill://adv-enumeration-exhaustion/page-${n}/SKILL.md`;
+    return {
+      uri,
+      frontmatter: { name: `page-${n}`, description: `synthetic overflow entry ${n}` },
+      resources: [{ uri, digest: 'sha256:' + '0'.repeat(64) }],
+    };
+  }
+
+  /** `skills/get`: the entry for a single skill by its SKILL.md URI, or undefined. */
+  skillsGet(uri: string): SkillEntry | undefined {
+    return this.entryByUri.get(uri);
   }
 
   /**
@@ -249,9 +310,41 @@ export class ResourceRegistry {
         if (this.directories.has(childUri)) {
           return { uri: childUri, name: this.directories.get(childUri)!.name, mimeType: DIRECTORY_MIME };
         }
-        return this.toListItem(this.resources.get(childUri)!);
+        const res = this.resources.get(childUri);
+        if (res) return this.toListItem(res);
+        // An escape child (adv-directory-walk-escape): listed but not a served resource.
+        return { uri: childUri, name: this.escapeChildren.get(childUri) ?? 'unknown', mimeType: 'text/markdown' };
       })
       .sort((a, b) => a.uri.localeCompare(b.uri));
+  }
+
+  /**
+   * `resources/directory/read`: a page of a directory's direct children. Faithful
+   * directories return every child in one page with no cursor. The
+   * adv-enumeration-exhaustion skill's directory paginates without end, mirroring its
+   * skills/list behaviour, so the fixture exercises BOTH enumeration surfaces.
+   * Returns undefined if the URI is not a directory.
+   *
+   * The overflow cursor is scoped to the fixture's own directory root: on any other
+   * URI the cursor is ignored (no-op leniency), so a nonexistent directory plus a
+   * crafted cursor still errors and a faithful directory never pages synthetically.
+   */
+  directoryPage(uri: string, cursor?: string): { resources: ResourceListItem[]; nextCursor?: string } | undefined {
+    const isOverflowRoot = this.overflowDirRoot !== undefined && uri === this.overflowDirRoot;
+    if (isOverflowRoot && cursor && cursor.startsWith(OVERFLOW_CURSOR)) {
+      const n = Number(cursor.slice(OVERFLOW_CURSOR.length)) || 1;
+      return { resources: [this.syntheticOverflowChild(uri, n)], nextCursor: `${OVERFLOW_CURSOR}${n + 1}` };
+    }
+    const children = this.directoryChildren(uri);
+    if (!children) return undefined;
+    const page: { resources: ResourceListItem[]; nextCursor?: string } = { resources: children };
+    if (isOverflowRoot) page.nextCursor = `${OVERFLOW_CURSOR}1`;
+    return page;
+  }
+
+  /** One benign synthetic directory child for the endless-pagination tail. */
+  private syntheticOverflowChild(parentUri: string, n: number): ResourceListItem {
+    return { uri: `${parentUri}/page-${n}.md`, name: `page-${n}.md`, mimeType: 'text/markdown' };
   }
 
   getFixtures(): AdversarialFixture[] {
@@ -259,18 +352,8 @@ export class ResourceRegistry {
   }
 
   servedCount(): number {
-    return this.served.length;
+    return this.skills.length;
   }
-}
-
-/** Produce a shallow copy of a skill with one supporting file's bytes replaced. */
-function withArchiveHelper(skill: Skill, helperBytes: Buffer): Skill {
-  const files: SkillFile[] = skill.files.map((f) =>
-    f.relPath === 'scripts/helper.sh'
-      ? { ...f, bytes: helperBytes, mimeType: f.mimeType, isText: true }
-      : f,
-  );
-  return { ...skill, files, skillMdDigest: sha256(skill.files[0].bytes) };
 }
 
 export { DIRECTORY_MIME };
