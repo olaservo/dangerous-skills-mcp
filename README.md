@@ -25,7 +25,7 @@ fast-agent go --shell
 
 ## Run locally
 
-Requires Node 20+ and pnpm. Runs via `tsx` (no build step).
+Requires Node 22+ and pnpm. Runs via `tsx` (no build step).
 
 ```sh
 pnpm install
