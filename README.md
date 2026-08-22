@@ -1,6 +1,6 @@
 # dangerous-skills-mcp
 
-A TypeScript MCP server that serves a "dangerous skills" corpus over MCP, implementing the Skills delivery model from [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640). Under an opt-in `--adversarial` profile it also serves a set of crafted, spec-violating fixtures for testing how MCP hosts handle skill delivery — archive path traversal, decompression bombs, digest/frontmatter mismatches, name collisions, and more.
+A TypeScript MCP server that serves a "dangerous skills" corpus over MCP, implementing the Skills delivery model from [SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640) (the current `sep/skills-extension` revision: `skills/list` + `skills/get` with a complete per-file `resources` digest set). Under an opt-in `--adversarial` profile it also serves crafted, spec-violating fixtures for testing how MCP hosts handle skill delivery — per-file digest/frontmatter integrity, reads scoped to a skill's `resources` set, cross-origin and name-collision impersonation, enumeration exhaustion, and nested-skill consent, plus a retained set of **deferred** archive-unpacking fixtures (archives are not in the v1 SEP).
 
 The corpus is forked from [`gricha/dangerous-skills`](https://github.com/gricha/dangerous-skills) (MIT © 2026 Greg Pstrucha). **Every payload is benign** — it writes a marker file or prints a canary string; nothing performs real harm.
 
@@ -25,7 +25,7 @@ fast-agent go --shell
 
 ## Run locally
 
-Requires Node 22+ and pnpm. Runs via `tsx` (no build step).
+Requires Node 22+ and pnpm (the Docker image pins `node:22-alpine`). Runs via `tsx` (no build step).
 
 ```sh
 pnpm install
@@ -42,29 +42,18 @@ pnpm smoke                   # PASS/FAIL per check
 pnpm smoke -- --adversarial  # also prints what a conformant host MUST do per fixture
 ```
 
-### Reading the oversized fixtures over stdio
-
-Two adversarial fixtures are deliberately larger than the MCP SDK's **default 10 MiB stdio read-buffer cap**: `adv-oversized-payload` (16 MiB) and `adv-walk-budget` (3 × 9 MiB, ~12.6 MiB each once base64-framed). A client using the default cap does not get an error on those reads — the SDK **closes the whole connection**.
-
-This matters for host testing: `adv-oversized-payload`'s oracle is that a host must bound the size of a fetched resource *before* decoding it. A host that simply gets disconnected never receives the payload, and can be mis-scored as having correctly rejected it.
-
-To exercise those fixtures, either use HTTP (`pnpm serve:http`, unaffected by the cap) or raise the cap on your client:
-
-```ts
-new StdioClientTransport({ command, args, maxBufferSize: 64 * 1024 * 1024 });
-```
-
-This repo's own server and smoke client both set `STDIO_MAX_BUFFER_SIZE` (64 MiB, `src/server.ts`), so `pnpm smoke -- --adversarial` covers them.
-
 ## What it serves
 
-Skills are addressed under a `skill://` URI scheme:
+Skills are addressed under a `skill://` URI scheme and enumerated by method:
 
-- `skill://index.json` — the catalog (per-skill `url` + sha256 `digest`, frontmatter, and archives).
-- `skill://<name>/SKILL.md` and supporting files — individually addressable and digest-verifiable.
-- `skill://<name>.tar.gz` / `.zip` — per-skill archives.
+- `skills/list` — the catalog: one `{ uri, frontmatter, resources }` entry per skill, where `resources` is the complete `{uri, digest}` set for every file (not just `SKILL.md`). Paginated. There is no `skill://index.json`.
+- `skills/get` — one skill's entry by its `SKILL.md` URI, listed or not (the verification-refresh path).
+- `skill://<name>/SKILL.md` and supporting files — individually addressable via `resources/read` and digest-verifiable against the entry's `resources`.
+- `resources/directory/read` — the SEP-2640 method for a directory's direct children.
 
-On top of standard MCP resources it adds a `resources/directory/read` method and advertises the `io.modelcontextprotocol/skills` capability. The `--adversarial` profile adds the spec-violating fixtures (namespaced `adv-`); the smoke client documents each one and the action a conformant host should take. See [`src/adversarial/catalog.ts`](src/adversarial/catalog.ts) for the full list.
+It advertises the `io.modelcontextprotocol/skills` capability (`directoryRead: true`). The `--adversarial` profile adds the spec-violating fixtures (namespaced `adv-`); the smoke client documents each one and the action a conformant host should take. See [`src/adversarial/catalog.ts`](src/adversarial/catalog.ts) for the full list.
+
+**Archives are a deferred feature** (not in the v1 SEP; see the SEP's "Appendix: Deferred Features"). The archive-unpacking fixtures are retained as a research corpus: their blobs are served as ordinary resources but are never referenced by a `skills/list` entry, so a v1 host never fetches them.
 
 ## Configuration
 
