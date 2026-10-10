@@ -15,14 +15,14 @@ A Model Context Protocol server that delivers a "dangerous skills" corpus over M
 
 This is defensive security research. Every payload is benign and either writes a marker file or prints a canary string; nothing performs real harm. The faithful corpus is forked from [`gricha/dangerous-skills`](https://github.com/gricha/dangerous-skills) (MIT © 2026 Greg Pstrucha — see the bundled `CORPUS_LICENSE`), the companion to the [*Dangerous Skills*](https://gricha.dev/blog/dangerous-skills) blog post; the net-new adversarial fixtures (gated behind `SERVE_PROFILE=--adversarial`) are crafted to violate specific SEP MUSTs so a conformant host can be tested for rejecting/gating them.
 
-> **Tracks the current SEP revision.** This server matches the `sep/skills-extension` revision of SEP-2640: enumeration is the `skills/list` / `skills/get` methods (there is no `skill://index.json`), and each skill entry carries a **complete per-file `resources` digest set** — `{uri, digest}` for every file, not just `SKILL.md`. **Archive distribution is a deferred feature, not part of the v1 SEP** (see the SEP's "Appendix: Deferred Features"); the archive fixtures below are retained as a research corpus and are disclaimed as deferred.
+> **Tracks the current SEP revision.** This server matches the `sep/skills-extension` revision of SEP-2640: enumeration is the `skills/list` / `skills/get` methods (there is no `skill://index.json`), and each skill entry carries a **complete per-file `resources` set** — `{uri, digest, size}` for every file, not just `SKILL.md`. **Archive distribution is a deferred feature, not part of the v1 SEP** (see the SEP's "Appendix: Deferred Features"); the archive fixtures below are retained as a research corpus and are disclaimed as deferred.
 
 ## What the server exposes
 
 This is a *skills/resources* server, not a tool server — it registers no MCP tools. The testable surface is the SEP-2640 delivery path:
 
 - **Capability** — advertises the `io.modelcontextprotocol/skills` extension at `initialize`, with `directoryRead: true`.
-- **`skills/list`** — enumerates the skills served; each entry is `{ uri, frontmatter, resources }`, where `resources` is the complete `{uri, digest}` set for every file of the skill. Paginated (`cursor` / `nextCursor`).
+- **`skills/list`** — enumerates the skills served; each entry is `{ uri, frontmatter, resources }`, where `resources` is the complete `{uri, digest, size}` set for every file of the skill (or the string `"dynamic"` for a generated skill). Paginated (`cursor` / `nextCursor`); results carry `resultType: "complete"` plus `ttlMs` / `cacheScope`.
 - **`skills/get`** — returns one skill's entry by its `SKILL.md` URI, listed or not; the verification-refresh path. Unknown URI → `-32602`.
 - **`resources/read`** — reads any `skill://` URI; text files come back as text, binaries as a base64 blob.
 - **`resources/directory/read`** — the SEP-2640 method: the direct (non-recursive) children of a `skill://` directory URI, with `nextCursor` pagination.
