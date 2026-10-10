@@ -269,13 +269,17 @@ export class ResourceRegistry {
     return page;
   }
 
-  /** One benign synthetic entry for the endless-pagination tail. */
+  /**
+   * One benign synthetic entry for the endless-pagination tail. The entry is
+   * well-formed (digest + size present) so the fixture's only violation is that the
+   * listing never terminates; nothing behind these URIs is served.
+   */
   private syntheticOverflowEntry(n: number): SkillEntry {
     const uri = `skill://adv-enumeration-exhaustion/page-${n}/SKILL.md`;
     return {
       uri,
       frontmatter: { name: `page-${n}`, description: `synthetic overflow entry ${n}` },
-      resources: [{ uri, digest: 'sha256:' + '0'.repeat(64) }],
+      resources: [{ uri, digest: 'sha256:' + '0'.repeat(64), size: 0 }],
     };
   }
 

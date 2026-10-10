@@ -5,8 +5,15 @@
  *
  *   pnpm serve:stdio                       # faithful corpus only
  *   pnpm serve:stdio -- --adversarial      # + adversarial fixtures
+ *
+ * `serveStdio` owns the protocol-era decision for the connection: a modern client
+ * (one that sends `_meta["io.modelcontextprotocol/protocolVersion"]`, e.g. the v2
+ * SDK client with `versionNegotiation: { mode: 'auto' }`) is served at revision
+ * 2026-07-28 — the base revision the stable Skills extension spec is written
+ * against — while a 2025-era `initialize` client is still served as before.
  */
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { ResourceRegistry } from './resources.js';
 import { buildServer, STDIO_MAX_BUFFER_SIZE } from './server.js';
 
 function wantsAdversarial(argv: string[]): boolean {
@@ -17,17 +24,21 @@ function wantsAdversarial(argv: string[]): boolean {
 
 async function main(): Promise<void> {
   const adversarial = wantsAdversarial(process.argv.slice(2));
-  const { server, registry } = await buildServer({ adversarial });
+  // Build the registry once; the factory below hands every Server instance the same one.
+  const registry = await ResourceRegistry.build({ adversarial });
   // Log to stderr only — stdout is the JSON-RPC channel.
   process.stderr.write(
     `[skills-over-mcp] stdio server ready: ${registry.servedCount()} skills served` +
       (adversarial ? ` (incl. ${registry.getFixtures().length} adversarial fixtures)` : '') +
       '\n',
   );
-  const transport = new StdioServerTransport(process.stdin, process.stdout, {
-    maxBufferSize: STDIO_MAX_BUFFER_SIZE,
+  serveStdio(async () => (await buildServer({ adversarial }, registry)).server, {
+    // Bring our own transport so the raised read-buffer cap applies (see server.ts).
+    transport: new StdioServerTransport(process.stdin, process.stdout, {
+      maxBufferSize: STDIO_MAX_BUFFER_SIZE,
+    }),
+    onerror: (err) => process.stderr.write(`[skills-over-mcp] stdio error: ${err.stack ?? err}\n`),
   });
-  await server.connect(transport);
 }
 
 main().catch((err) => {
