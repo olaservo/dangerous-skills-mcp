@@ -34,6 +34,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * separate from the server's export on purpose — this is the client's independent
  * check of what came back over the wire. A non-spec method ALWAYS needs an explicit
  * result schema on `client.request()` (only spec methods resolve one by name).
+ *
+ * NOTE: the v2 client consumes the 2026-07-28 `resultType` discriminator while
+ * decoding, so it never reaches these schemas; the raw-wire conformance probe is what
+ * asserts `resultType: "complete"`. `ttlMs` / `cacheScope` do pass through.
  */
 const DirectoryReadResultSchema = z.object({
   resources: z.array(
@@ -89,7 +93,12 @@ function parseArgs(argv: string[]): Args {
 }
 
 async function connect(args: Args): Promise<Client> {
-  const client = new Client({ name: 'skills-over-mcp-smoke', version: '1.0.0' });
+  // 'auto' probes with server/discover and lands on protocol revision 2026-07-28 when
+  // the server speaks it (the base revision of the stable Skills extension spec).
+  const client = new Client(
+    { name: 'skills-over-mcp-smoke', version: '1.0.0' },
+    { versionNegotiation: { mode: 'auto' } },
+  );
   if (args.http) {
     const transport = new StreamableHTTPClientTransport(new URL(args.http));
     await client.connect(transport);
@@ -129,21 +138,30 @@ async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; 
 
 // ---- SEP-2640 skills/list + skills/get shapes ----
 
-const ResourceDigestSchema = z.object({ uri: z.string(), digest: z.string() });
+// Spec SkillResource: every item carries the digest AND byte size of the raw content.
+const SkillResourceSchema = z.object({ uri: z.string(), digest: z.string(), size: z.number().int().nonnegative() });
 const SkillEntrySchema = z.object({
   uri: z.string(),
   // zod 4: `z.record` takes an explicit key type.
   frontmatter: z.record(z.string(), z.unknown()),
-  resources: z.array(ResourceDigestSchema).optional(),
+  // REQUIRED: the complete array, or the string "dynamic" for a generated skill.
+  resources: z.union([z.array(SkillResourceSchema), z.literal('dynamic')]),
 });
+// ListSkillsResult / GetSkillResult extend CacheableResult: ttlMs + cacheScope are REQUIRED.
+const CacheableFields = { ttlMs: z.number().int().nonnegative(), cacheScope: z.enum(['public', 'private']) };
 const SkillsListResultSchema = z.object({
   skills: z.array(SkillEntrySchema),
   nextCursor: z.string().optional(),
+  ...CacheableFields,
 });
-const SkillsGetResultSchema = z.object({ skill: SkillEntrySchema });
+const SkillsGetResultSchema = z.object({ skill: SkillEntrySchema, ...CacheableFields });
 type SkillEntry = z.infer<typeof SkillEntrySchema>;
+type SkillResource = z.infer<typeof SkillResourceSchema>;
 
-async function skillsList(client: Client, cursor?: string): Promise<{ skills: SkillEntry[]; nextCursor?: string }> {
+async function skillsList(
+  client: Client,
+  cursor?: string,
+): Promise<{ skills: SkillEntry[]; nextCursor?: string; ttlMs: number; cacheScope: string }> {
   return client.request(
     { method: SKILLS_LIST_METHOD, params: cursor ? { cursor } : {} },
     SkillsListResultSchema,
@@ -152,6 +170,10 @@ async function skillsList(client: Client, cursor?: string): Promise<{ skills: Sk
 
 async function runCoreChecks(client: Client, adversarial: boolean): Promise<void> {
   process.stdout.write('\n== Core conformance checks ==\n');
+
+  // Protocol revision: the stable Skills extension spec is written against 2026-07-28.
+  const negotiated = client.getNegotiatedProtocolVersion();
+  check('negotiated protocol revision is 2026-07-28', negotiated === '2026-07-28', `protocolVersion=${negotiated}`);
 
   // Capability advertisement.
   const caps = client.getServerCapabilities();
@@ -171,22 +193,35 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   // skills/list — the SEP enumeration method (first page).
   const listed = await skillsList(client);
   check('skills/list returns a skills array', Array.isArray(listed.skills), `${listed.skills.length} skills (first page)`);
+  check(
+    'skills/list carries ttlMs + cacheScope (CacheableResult, 2026-07-28)',
+    Number.isInteger(listed.ttlMs) && (listed.cacheScope === 'public' || listed.cacheScope === 'private'),
+    `ttlMs=${listed.ttlMs} cacheScope=${listed.cacheScope}`,
+  );
+  // Every entry carries `resources` (array or "dynamic"); every array item carries an integer size.
+  check(
+    'every listed entry has resources: array | "dynamic", each item with integer size',
+    listed.skills.every(
+      (s) => s.resources === 'dynamic' || s.resources.every((r) => Number.isInteger(r.size) && r.size >= 0),
+    ),
+  );
 
   // Pick a faithful entry with a complete resources set, preferring one with a supporting file.
   const faithful = listed.skills.filter(
-    (s) => s.resources && s.resources.length > 0 && !s.uri.includes('adv-') && !s.uri.includes('refunds'),
+    (s) => Array.isArray(s.resources) && s.resources.length > 0 && !s.uri.includes('adv-') && !s.uri.includes('refunds'),
   );
-  const entry = faithful.find((s) => (s.resources?.length ?? 0) > 1) ?? faithful[0];
-  if (!entry || !entry.resources) {
+  const entry = faithful.find((s) => Array.isArray(s.resources) && s.resources.length > 1) ?? faithful[0];
+  if (!entry || !Array.isArray(entry.resources)) {
     check('a faithful entry with a resources set exists', false, 'none found in skills/list');
     return;
   }
+  const entryResources: SkillResource[] = entry.resources;
 
   // SEP §Resources: the set MUST include an item matching the top-level SKILL.md uri.
-  const skillMdDigest = entry.resources.find((r) => r.uri === entry.uri);
+  const skillMdDigest = entryResources.find((r) => r.uri === entry.uri);
   check('entry.resources includes an item for the SKILL.md uri', !!skillMdDigest);
 
-  // Verify the SKILL.md bytes against its per-file digest.
+  // Verify the SKILL.md bytes against its per-file digest AND size.
   const skillRead = await readBytes(client, entry.uri);
   const computed = sha256(skillRead.bytes);
   check(
@@ -194,13 +229,19 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
     !!skillMdDigest && computed === skillMdDigest.digest,
     `entry=${(skillMdDigest?.digest ?? '').slice(0, 23)}… computed=${computed.slice(0, 23)}…`,
   );
+  check(
+    'SKILL.md byte length matches its resources entry size',
+    !!skillMdDigest && skillRead.bytes.length === skillMdDigest.size,
+    `entry=${skillMdDigest?.size} read=${skillRead.bytes.length}`,
+  );
 
-  // Verify a SUPPORTING file against its per-file digest — the whole-skill integrity the
-  // v1 SEP adds over the old SKILL.md-only digest.
-  const supporting = entry.resources.find((r) => r.uri !== entry.uri);
+  // Verify a SUPPORTING file against its per-file digest + size — the whole-skill
+  // integrity the v1 SEP adds over the old SKILL.md-only digest.
+  const supporting = entryResources.find((r) => r.uri !== entry.uri);
   if (supporting) {
     const sup = await readBytes(client, supporting.uri);
     check(`supporting-file digest matches its resources entry (${supporting.uri})`, sha256(sup.bytes) === supporting.digest);
+    check(`supporting-file byte length matches its resources entry size`, sup.bytes.length === supporting.size, `entry=${supporting.size} read=${sup.bytes.length}`);
   } else {
     process.stdout.write('  (picked entry has no supporting file; per-file digest check skipped)\n');
   }
@@ -214,7 +255,12 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   check('skills/get returns the same entry by URI', got.skill.uri === entry.uri);
   check(
     'skills/get carries the same resources set as skills/list',
-    JSON.stringify(got.skill.resources) === JSON.stringify(entry.resources),
+    JSON.stringify(got.skill.resources) === JSON.stringify(entryResources),
+  );
+  check(
+    'skills/get carries ttlMs + cacheScope (CacheableResult, 2026-07-28)',
+    Number.isInteger(got.ttlMs) && (got.cacheScope === 'public' || got.cacheScope === 'private'),
+    `ttlMs=${got.ttlMs} cacheScope=${got.cacheScope}`,
   );
 
   // skills/get on an unknown URI MUST error with -32602.
@@ -312,7 +358,7 @@ async function runAdversarialReport(client: Client): Promise<void> {
   const servedUris = new Set<string>();
   for (const s of listed.skills) {
     servedUris.add(s.uri);
-    for (const r of s.resources ?? []) servedUris.add(r.uri);
+    if (Array.isArray(s.resources)) for (const r of s.resources) servedUris.add(r.uri);
   }
   for (const r of resList.resources) servedUris.add(r.uri);
   const allUris = [...servedUris];
