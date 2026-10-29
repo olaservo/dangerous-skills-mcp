@@ -38,8 +38,9 @@ pnpm serve:stdio -- --adversarial  # + adversarial fixtures
 pnpm serve:http
 
 # smoke client — spawns the server and runs conformance checks
-pnpm smoke                   # PASS/FAIL per check
+pnpm smoke                   # PASS/FAIL per check, incl. the SDK's SkillsClient verifying the catalog
 pnpm smoke -- --adversarial  # also prints what a conformant host MUST do per fixture
+pnpm smoke -- --legacy       # connect with the 2025-11-25 handshake instead of 2026-07-28
 ```
 
 ## What it serves
@@ -49,7 +50,9 @@ Skills are addressed under a `skill://` URI scheme and enumerated by method:
 - `skills/list` — the catalog: one `{ uri, frontmatter, resources }` entry per skill, where `resources` is the complete `{uri, digest, size}` set for every file (not just `SKILL.md`) — or the string `"dynamic"` for a generated skill (none in this corpus). Paginated; the result carries `resultType: "complete"` and the `ttlMs` / `cacheScope` freshness hints. There is no `skill://index.json`.
 - `skills/get` — one skill's entry by its `SKILL.md` URI, listed or not (the verification-refresh path).
 - `skill://<name>/SKILL.md` and supporting files — individually addressable via `resources/read` and verifiable (digest and byte size) against the entry's `resources`.
-- `resources/directory/read` — the SEP-2640 method for a directory's direct children.
+- `resources/directory/read` — the SEP-2640 method for a directory's direct children. Paginated and cacheable like `skills/list` (`resultType`, `ttlMs`, `cacheScope`).
+
+The handlers are hand-rolled on the SDK's low-level `Server` rather than its `SkillsExtension` (`@modelcontextprotocol/server/ext/skills`, SDK 2.4.0): the extension validates every entry it serves and drops invalid ones, which would delete the adversarial fixtures. The wire constants and request schemas come from `@modelcontextprotocol/core/ext/skills`, and the smoke client validates the faithful profile with the SDK's result schemas and `SkillsClient`.
 
 It advertises the `io.modelcontextprotocol/skills` capability (`directoryRead: true`) and speaks base protocol revision 2026-07-28 — the revision the stable Skills extension spec is written against — via the SDK's `serveStdio` / `createMcpHandler` entries, while still answering 2025-era `initialize` clients. The `--adversarial` profile adds the spec-violating fixtures (namespaced `adv-`); the smoke client documents each one and the action a conformant host should take. See [`src/adversarial/catalog.ts`](src/adversarial/catalog.ts) for the full list.
 
