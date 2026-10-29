@@ -39,17 +39,15 @@
  * computed from the bytes actually registered for the file, so a fixture's deliberate
  * violation stays its only one.
  */
+import type { SkillResourceEntry } from '@modelcontextprotocol/core/ext/skills';
 import { fileUri, sha256, skillAuthority, type Skill } from './corpus.js';
 
-/** One item of a skill entry's `resources` array (spec `SkillResource`). */
-export interface SkillResource {
-  /** Resource URI of the file (a skill:// URI within the skill directory). */
-  uri: string;
-  /** `sha256:<64 lowercase hex>` over the file's raw bytes. */
-  digest: string;
-  /** Byte length of the raw content the digest covers. */
-  size: number;
-}
+/**
+ * One item of a skill entry's `resources` array (spec `SkillResource`): the file's
+ * skill:// URI, `sha256:<64 lowercase hex>` over its raw bytes, and the byte length
+ * of those same bytes. The SDK's type has exactly that shape.
+ */
+export type SkillResource = SkillResourceEntry;
 
 /** @deprecated Older name for {@link SkillResource}; kept for readers of earlier revisions. */
 export type ResourceDigest = SkillResource;

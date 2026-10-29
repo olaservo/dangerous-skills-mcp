@@ -10,19 +10,33 @@
  *     with Zod schemas,
  *   - a custom extension capability in the server capabilities.
  *
+ * The SDK's own `SkillsExtension` (`@modelcontextprotocol/server/ext/skills`) is not
+ * used on purpose: it validates every entry it serves and drops invalid ones, and the
+ * adversarial profile exists to put spec-violating entries on the wire. The handlers
+ * stay hand-rolled; the wire constants, request-params schemas and the pieces of the
+ * result schemas that are identical come from `@modelcontextprotocol/core/ext/skills`.
+ *
  * A fresh Server is built per serving unit (one stdio connection, one HTTP request)
  * by the SDK entries `serveStdio` / `createMcpHandler`, which own the protocol-era
  * decision: 2026-07-28 for modern clients, 2025-era `initialize` for legacy ones. The
  * (expensive) ResourceRegistry is built once and shared across those instances.
  */
+import {
+  GetSkillRequestParamsSchema,
+  ListSkillsRequestParamsSchema,
+  ReadResourceDirectoryRequestParamsSchema,
+  ReadResourceDirectoryResultSchema,
+  RESOURCES_DIRECTORY_READ_METHOD,
+  SkillCacheScopeSchema,
+  SKILLS_EXTENSION_ID,
+  SKILLS_GET_METHOD,
+  SKILLS_LIST_METHOD,
+} from '@modelcontextprotocol/core/ext/skills';
 import { Server, ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { ResourceRegistry, type RegistryOptions } from './resources.js';
 
-export const SKILLS_EXTENSION = 'io.modelcontextprotocol/skills';
-export const DIRECTORY_READ_METHOD = 'resources/directory/read';
-export const SKILLS_LIST_METHOD = 'skills/list';
-export const SKILLS_GET_METHOD = 'skills/get';
+export { RESOURCES_DIRECTORY_READ_METHOD, SKILLS_EXTENSION_ID, SKILLS_GET_METHOD, SKILLS_LIST_METHOD };
 
 /**
  * Read-buffer cap for the stdio transport, in bytes.
@@ -41,7 +55,7 @@ export const STDIO_MAX_BUFFER_SIZE = 64 * 1024 * 1024;
 
 /**
  * Cache hint stamped on every CacheableResult this server emits (`skills/list`,
- * `skills/get`, `resources/list`, `resources/read`). The spec makes `ttlMs` and
+ * `skills/get`, `resources/directory/read`, `resources/list`, `resources/read`). The spec makes `ttlMs` and
  * `cacheScope` REQUIRED on those results at 2026-07-28; they are a freshness hint and
  * a cache-scope marker, never an integrity property — digests/sizes govern content.
  * The corpus is static and unauthenticated, so it is `public` with a 5-minute TTL.
@@ -50,56 +64,31 @@ export const CACHE_HINT = { ttlMs: 300_000, cacheScope: 'public' } as const;
 
 const CacheableFields = {
   ttlMs: z.number().int().nonnegative(),
-  cacheScope: z.enum(['public', 'private']),
+  cacheScope: SkillCacheScopeSchema,
 };
 
 /**
- * Params schema for the custom resources/directory/read method. SDK v2 registers
- * a non-spec method with `setRequestHandler(method, { params, result? }, handler)`,
- * so the schema describes the *params* object only — the method name is the first
- * argument and the SDK validates `request.params` against this schema, handing the
- * handler the parsed params directly.
+ * The SDK registers a non-spec method with `setRequestHandler(method, { params, result? },
+ * handler)`: `request.params` is validated against the params schema and the handler
+ * receives the parsed params; the result schema only types the return value. The params
+ * schemas are the SDK's own (the same ones its SkillsExtension registers).
+ *
+ * The skills/list and skills/get result schemas stay local. The SDK's `SkillSchema`
+ * requires a string `name` and `description` in `frontmatter` and a well-formed
+ * `sha256:` digest on every resource; the adversarial profile must be able to put an
+ * entry on the wire that breaks those rules, so the local schemas type the entry as the
+ * permissive superset. The directory-read result uses the SDK's schema: nothing a
+ * fixture emits for it is outside the ordinary Resource shape.
  */
-export const DirectoryReadParamsSchema = z.object({
-  uri: z.string(),
-  cursor: z.string().optional(),
-});
 
-/** One direct child in a resources/directory/read page (ordinary Resource metadata). */
-export const DirectoryChildSchema = z.object({
-  uri: z.string(),
-  name: z.string(),
-  mimeType: z.string(),
-  size: z.number().optional(),
-  description: z.string().optional(),
-  _meta: z.record(z.string(), z.unknown()).optional(),
-});
-
-/**
- * Result schema for resources/directory/read (spec `ReadResourceDirectoryResult`):
- * `resultType` MUST be "complete"; paginated; NOT a CacheableResult. Purely a typing
- * aid for the handler return value (the SDK does not validate results against it),
- * but it keeps the wire shape declared next to the params.
- */
-export const DirectoryReadResultSchema = z.object({
-  resultType: z.literal('complete'),
-  resources: z.array(DirectoryChildSchema),
-  nextCursor: z.string().optional(),
-});
-
-/** Params schemas for the custom skills/list and skills/get methods (same 3-arg form). */
-export const SkillsListParamsSchema = z.object({ cursor: z.string().optional() }).optional();
-
-export const SkillsGetParamsSchema = z.object({ uri: z.string() });
-
-/** Spec `SkillResource`: every file of a skill, with the digest and byte size of its raw content. */
+/** Spec `SkillResource` (permissive: the digest is any string). */
 export const SkillResourceSchema = z.object({
   uri: z.string(),
   digest: z.string(),
   size: z.number().int().nonnegative(),
 });
 
-/** Spec `Skill` entry. `resources` is REQUIRED: the complete array or the string "dynamic". */
+/** Spec `Skill` entry (permissive frontmatter). `resources` is REQUIRED: the complete array or "dynamic". */
 export const SkillEntrySchema = z.object({
   uri: z.string(),
   frontmatter: z.record(z.string(), z.unknown()),
@@ -147,7 +136,7 @@ export async function buildServer(
         resources: { listChanged: false },
         // SEP-2640 extension capability: advertise directoryRead support.
         extensions: {
-          [SKILLS_EXTENSION]: { directoryRead: true },
+          [SKILLS_EXTENSION_ID]: { directoryRead: true },
         },
       },
       // Server-level hint for the standard cacheable results. Our handlers also set
@@ -202,9 +191,9 @@ export async function buildServer(
   // own cacheable methods, so resultType/ttlMs/cacheScope are set here explicitly.
   server.setRequestHandler(
     SKILLS_LIST_METHOD,
-    { params: SkillsListParamsSchema, result: SkillsListResultSchema },
+    { params: ListSkillsRequestParamsSchema, result: SkillsListResultSchema },
     async (params) => {
-      const page = registry.skillsList(params?.cursor);
+      const page = registry.skillsList(params.cursor);
       const result: z.infer<typeof SkillsListResultSchema> = {
         resultType: 'complete',
         skills: page.skills,
@@ -218,7 +207,7 @@ export async function buildServer(
   // skills/get — the entry for one skill by its SKILL.md URI (listed or not).
   server.setRequestHandler(
     SKILLS_GET_METHOD,
-    { params: SkillsGetParamsSchema, result: SkillsGetResultSchema },
+    { params: GetSkillRequestParamsSchema, result: SkillsGetResultSchema },
     async (params) => {
       const entry = registry.skillsGet(params.uri);
       if (!entry) {
@@ -232,9 +221,11 @@ export async function buildServer(
   // Custom (non-spec) method: the 3-arg form takes the method name plus explicit
   // params/result schemas, and the handler receives the PARSED PARAMS (not the
   // `{ method, params }` envelope). Request metadata lives on `ctx.mcpReq._meta`.
+  // The spec's ReadResourceDirectoryResult extends CacheableResult, so the result
+  // carries ttlMs/cacheScope like the other two methods.
   server.setRequestHandler(
-    DIRECTORY_READ_METHOD,
-    { params: DirectoryReadParamsSchema, result: DirectoryReadResultSchema },
+    RESOURCES_DIRECTORY_READ_METHOD,
+    { params: ReadResourceDirectoryRequestParamsSchema, result: ReadResourceDirectoryResultSchema },
     async (params) => {
       // The SEP says directory URIs are *written* without a trailing slash; it does
       // not require rejecting a client that supplies one. Be lenient: normalize a
@@ -246,9 +237,10 @@ export async function buildServer(
       }
       // Faithful directories return all children in one page (no cursor). The
       // adv-enumeration-exhaustion skill's directory paginates without end.
-      const result: z.infer<typeof DirectoryReadResultSchema> = {
+      const result: z.infer<typeof ReadResourceDirectoryResultSchema> & { resultType: 'complete' } = {
         resultType: 'complete',
         resources: page.resources,
+        ...CACHE_HINT,
       };
       if (page.nextCursor) result.nextCursor = page.nextCursor;
       return result;

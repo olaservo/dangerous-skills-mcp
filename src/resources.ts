@@ -20,6 +20,7 @@
  * `skills/list` entry (the v1 listing has no archive form), and archive-only skills are
  * excluded from the listing entirely (they cannot be expressed in the individual-file model).
  */
+import { DIRECTORY_MIME_TYPE } from '@modelcontextprotocol/core/ext/skills';
 import { archiveUri, fileUri, loadCorpus, skillAuthority, type Skill } from './corpus.js';
 import type { ArchiveBlob } from './archives.js';
 import { buildSkillEntry, type SkillEntry } from './skills.js';
@@ -47,7 +48,8 @@ export interface DirectoryNode {
   children: string[];
 }
 
-export interface ResourceListItem {
+/** A type alias (not an interface) so it is assignable to the SDK's loose Resource shape. */
+export type ResourceListItem = {
   uri: string;
   name: string;
   mimeType: string;
@@ -57,7 +59,7 @@ export interface ResourceListItem {
   description?: string;
   /** SEP: additional frontmatter under the io.modelcontextprotocol.skills/ prefix. */
   _meta?: Record<string, unknown>;
-}
+};
 
 /** A page of `skills/list` results. */
 export interface SkillsPage {
@@ -75,7 +77,6 @@ export interface RegistryOptions {
   root?: string;
 }
 
-const DIRECTORY_MIME = 'inode/directory';
 /** Cursor prefix for the adv-enumeration-exhaustion endless-pagination tail. */
 const OVERFLOW_CURSOR = 'adv-overflow-';
 
@@ -312,7 +313,7 @@ export class ResourceRegistry {
     return dir.children
       .map((childUri) => {
         if (this.directories.has(childUri)) {
-          return { uri: childUri, name: this.directories.get(childUri)!.name, mimeType: DIRECTORY_MIME };
+          return { uri: childUri, name: this.directories.get(childUri)!.name, mimeType: DIRECTORY_MIME_TYPE };
         }
         const res = this.resources.get(childUri);
         if (res) return this.toListItem(res);
@@ -360,4 +361,3 @@ export class ResourceRegistry {
   }
 }
 
-export { DIRECTORY_MIME };
