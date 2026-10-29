@@ -8,6 +8,7 @@
  *
  *   pnpm smoke
  *   pnpm smoke -- --adversarial
+ *   pnpm smoke -- --legacy       # connect as a 2025-11-25 client
  *   pnpm smoke:http              # against a running `pnpm serve:http`
  *
  * Exit code is non-zero if any PASS/FAIL check fails.
@@ -16,32 +17,41 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { SkillsClient } from '@modelcontextprotocol/client/ext/skills';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { z } from 'zod';
 import {
-  DIRECTORY_READ_METHOD,
-  SKILLS_EXTENSION,
+  GetSkillResultSchema,
+  ListSkillsResultSchema,
+  ReadResourceDirectoryResultSchema,
+  RESOURCES_DIRECTORY_READ_METHOD,
+  SKILLS_EXTENSION_ID,
   SKILLS_GET_METHOD,
   SKILLS_LIST_METHOD,
-  STDIO_MAX_BUFFER_SIZE,
-} from './server.js';
+} from '@modelcontextprotocol/core/ext/skills';
+import { z } from 'zod';
+import { STDIO_MAX_BUFFER_SIZE } from './server.js';
 import { ADVERSARIAL_CASES } from './adversarial/catalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Client-side result schema for the custom resources/directory/read method. Kept
- * separate from the server's export on purpose — this is the client's independent
- * check of what came back over the wire. A non-spec method ALWAYS needs an explicit
- * result schema on `client.request()` (only spec methods resolve one by name).
+ * Result schemas for the three extension methods. A non-spec method ALWAYS needs an
+ * explicit result schema on `client.request()` (only spec methods resolve one by name).
+ *
+ * The faithful profile is validated with the SDK's own schemas from
+ * `@modelcontextprotocol/core/ext/skills`: a well-formed `sha256:` digest on every
+ * resource, string `name`/`description` in every frontmatter, `ttlMs`/`cacheScope`
+ * required. The adversarial profile deliberately serves entries that break those rules
+ * (a `file:` URI, tampered frontmatter), so it is read with the permissive local copies
+ * below and the per-fixture checks say what a host must do with each entry.
  *
  * NOTE: the v2 client consumes the 2026-07-28 `resultType` discriminator while
  * decoding, so it never reaches these schemas; the raw-wire conformance probe is what
  * asserts `resultType: "complete"`. `ttlMs` / `cacheScope` do pass through.
  */
-const DirectoryReadResultSchema = z.object({
+const LooseDirectoryReadResultSchema = z.object({
   resources: z.array(
-    z.object({
+    z.looseObject({
       uri: z.string(),
       name: z.string(),
       mimeType: z.string(),
@@ -49,6 +59,8 @@ const DirectoryReadResultSchema = z.object({
     }),
   ),
   nextCursor: z.string().optional(),
+  ttlMs: z.number().int().nonnegative().optional(),
+  cacheScope: z.enum(['public', 'private']).optional(),
 });
 
 /** Permissive resources/list schema that preserves the SEP metadata + base-MCP size fields. */
@@ -82,6 +94,8 @@ function check(label: string, ok: boolean, detail = ''): void {
 interface Args {
   http?: string;
   adversarial: boolean;
+  /** Connect with the plain 2025-11-25 handshake instead of negotiating 2026-07-28. */
+  legacy: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -89,15 +103,17 @@ function parseArgs(argv: string[]): Args {
   return {
     http: httpIdx !== -1 ? argv[httpIdx + 1] : undefined,
     adversarial: argv.includes('--adversarial'),
+    legacy: argv.includes('--legacy'),
   };
 }
 
 async function connect(args: Args): Promise<Client> {
   // 'auto' probes with server/discover and lands on protocol revision 2026-07-28 when
-  // the server speaks it (the base revision of the stable Skills extension spec).
+  // the server speaks it (the base revision of the stable Skills extension spec);
+  // 'legacy' is the plain 2025 connect sequence of a client without the option.
   const client = new Client(
     { name: 'skills-over-mcp-smoke', version: '1.0.0' },
-    { versionNegotiation: { mode: 'auto' } },
+    { versionNegotiation: { mode: args.legacy ? 'legacy' : 'auto' } },
   );
   if (args.http) {
     const transport = new StreamableHTTPClientTransport(new URL(args.http));
@@ -136,48 +152,65 @@ async function readBytes(client: Client, uri: string): Promise<{ bytes: Buffer; 
   throw new Error(`resources/read returned no readable content for ${uri}`);
 }
 
-// ---- SEP-2640 skills/list + skills/get shapes ----
+// ---- SEP-2640 skills/list + skills/get shapes (permissive copies for the adversarial profile) ----
 
 // Spec SkillResource: every item carries the digest AND byte size of the raw content.
-const SkillResourceSchema = z.object({ uri: z.string(), digest: z.string(), size: z.number().int().nonnegative() });
-const SkillEntrySchema = z.object({
+const LooseSkillResourceSchema = z.object({ uri: z.string(), digest: z.string(), size: z.number().int().nonnegative() });
+const LooseSkillEntrySchema = z.object({
   uri: z.string(),
   // zod 4: `z.record` takes an explicit key type.
   frontmatter: z.record(z.string(), z.unknown()),
   // REQUIRED: the complete array, or the string "dynamic" for a generated skill.
-  resources: z.union([z.array(SkillResourceSchema), z.literal('dynamic')]),
+  resources: z.union([z.array(LooseSkillResourceSchema), z.literal('dynamic')]),
 });
 // ListSkillsResult / GetSkillResult extend CacheableResult: ttlMs + cacheScope are REQUIRED.
 const CacheableFields = { ttlMs: z.number().int().nonnegative(), cacheScope: z.enum(['public', 'private']) };
-const SkillsListResultSchema = z.object({
-  skills: z.array(SkillEntrySchema),
+const LooseSkillsListResultSchema = z.object({
+  skills: z.array(LooseSkillEntrySchema),
   nextCursor: z.string().optional(),
   ...CacheableFields,
 });
-const SkillsGetResultSchema = z.object({ skill: SkillEntrySchema, ...CacheableFields });
-type SkillEntry = z.infer<typeof SkillEntrySchema>;
-type SkillResource = z.infer<typeof SkillResourceSchema>;
+const LooseSkillsGetResultSchema = z.object({ skill: LooseSkillEntrySchema, ...CacheableFields });
+type SkillEntry = z.infer<typeof LooseSkillEntrySchema>;
+type SkillResource = z.infer<typeof LooseSkillResourceSchema>;
+
+/** The result schemas in use: the SDK's for the faithful profile, the permissive copies for --adversarial. */
+const STRICT_WIRE = { list: ListSkillsResultSchema, get: GetSkillResultSchema, dir: ReadResourceDirectoryResultSchema };
+const LOOSE_WIRE = { list: LooseSkillsListResultSchema, get: LooseSkillsGetResultSchema, dir: LooseDirectoryReadResultSchema };
+let wire: typeof STRICT_WIRE | typeof LOOSE_WIRE = STRICT_WIRE;
 
 async function skillsList(
   client: Client,
   cursor?: string,
 ): Promise<{ skills: SkillEntry[]; nextCursor?: string; ttlMs: number; cacheScope: string }> {
-  return client.request(
-    { method: SKILLS_LIST_METHOD, params: cursor ? { cursor } : {} },
-    SkillsListResultSchema,
-  );
+  return client.request({ method: SKILLS_LIST_METHOD, params: cursor ? { cursor } : {} }, wire.list);
 }
 
-async function runCoreChecks(client: Client, adversarial: boolean): Promise<void> {
+async function skillsGet(client: Client, uri: string): Promise<{ skill: SkillEntry; ttlMs: number; cacheScope: string }> {
+  return client.request({ method: SKILLS_GET_METHOD, params: { uri } }, wire.get);
+}
+
+async function directoryRead(
+  client: Client,
+  uri: string,
+  cursor?: string,
+): Promise<{ resources: Array<{ uri: string; name: string; mimeType?: string; size?: number }>; nextCursor?: string; ttlMs?: number; cacheScope?: string }> {
+  return client.request({ method: RESOURCES_DIRECTORY_READ_METHOD, params: cursor ? { uri, cursor } : { uri } }, wire.dir);
+}
+
+async function runCoreChecks(client: Client, args: Args): Promise<void> {
+  const { adversarial } = args;
   process.stdout.write('\n== Core conformance checks ==\n');
 
-  // Protocol revision: the stable Skills extension spec is written against 2026-07-28.
+  // Protocol revision: the stable Skills extension spec is written against 2026-07-28;
+  // with --legacy the client runs the plain 2025 handshake and must still be served.
+  const expected = args.legacy ? '2025-11-25' : '2026-07-28';
   const negotiated = client.getNegotiatedProtocolVersion();
-  check('negotiated protocol revision is 2026-07-28', negotiated === '2026-07-28', `protocolVersion=${negotiated}`);
+  check(`negotiated protocol revision is ${expected}`, negotiated === expected, `protocolVersion=${negotiated}`);
 
   // Capability advertisement.
   const caps = client.getServerCapabilities();
-  const ext = (caps?.extensions as Record<string, unknown> | undefined)?.[SKILLS_EXTENSION] as
+  const ext = (caps?.extensions as Record<string, unknown> | undefined)?.[SKILLS_EXTENSION_ID] as
     | { directoryRead?: boolean }
     | undefined;
   check('initialize advertises Skills extension capability', !!ext, JSON.stringify(ext ?? caps?.extensions));
@@ -251,7 +284,7 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   check('SKILL.md readable from its URI alone', direct.bytes.length > 0);
 
   // skills/get — same entry by URI, listed or not.
-  const got = await client.request({ method: SKILLS_GET_METHOD, params: { uri: entry.uri } }, SkillsGetResultSchema);
+  const got = await skillsGet(client, entry.uri);
   check('skills/get returns the same entry by URI', got.skill.uri === entry.uri);
   check(
     'skills/get carries the same resources set as skills/list',
@@ -266,10 +299,7 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   // skills/get on an unknown URI MUST error with -32602.
   let getErrored = false;
   try {
-    await client.request(
-      { method: SKILLS_GET_METHOD, params: { uri: 'skill://nonexistent/SKILL.md' } },
-      SkillsGetResultSchema,
-    );
+    await skillsGet(client, 'skill://nonexistent/SKILL.md');
   } catch (err) {
     getErrored = true;
     const code = (err as { code?: number }).code;
@@ -279,20 +309,19 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
 
   // resources/directory/read on the skill dir.
   const skillDirUri = entry.uri.replace(/\/SKILL\.md$/, '');
-  const dir = await client.request(
-    { method: DIRECTORY_READ_METHOD, params: { uri: skillDirUri } },
-    DirectoryReadResultSchema,
-  );
+  const dir = await directoryRead(client, skillDirUri);
   check(`resources/directory/read lists direct children of ${skillDirUri}`, dir.resources.length > 0, `${dir.resources.length} children`);
   check('directory listing includes SKILL.md as a direct child', dir.resources.some((r) => r.uri === entry.uri));
+  check(
+    'resources/directory/read carries ttlMs + cacheScope (CacheableResult, 2026-07-28)',
+    Number.isInteger(dir.ttlMs) && (dir.cacheScope === 'public' || dir.cacheScope === 'private'),
+    `ttlMs=${dir.ttlMs} cacheScope=${dir.cacheScope}`,
+  );
 
   // directory/read on a non-directory MUST be an error (-32602).
   let errored = false;
   try {
-    await client.request(
-      { method: DIRECTORY_READ_METHOD, params: { uri: 'skill://nonexistent/nope' } },
-      DirectoryReadResultSchema,
-    );
+    await directoryRead(client, 'skill://nonexistent/nope');
   } catch (err) {
     errored = true;
     const code = (err as { code?: number }).code;
@@ -306,10 +335,7 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   // that skills/get and resources/read cannot satisfy.
   let cursorErrored = false;
   try {
-    await client.request(
-      { method: DIRECTORY_READ_METHOD, params: { uri: 'skill://nonexistent/nope', cursor: 'adv-overflow-1' } },
-      DirectoryReadResultSchema,
-    );
+    await directoryRead(client, 'skill://nonexistent/nope', 'adv-overflow-1');
   } catch (err) {
     cursorErrored = true;
     const code = (err as { code?: number }).code;
@@ -340,6 +366,75 @@ async function runCoreChecks(client: Client, adversarial: boolean): Promise<void
   } else {
     check('SKILL.md present in resources/list with metadata', false, entry.uri);
   }
+}
+
+/**
+ * The SDK's host-side `SkillsClient` against the faithful profile: it refuses any entry
+ * that breaks the stable spec's structural rules and verifies every read against the
+ * entry (size, digest, and SKILL.md frontmatter), so a pass here is a second, independent
+ * conformance check of the catalog.
+ */
+async function runSkillsClientChecks(client: Client): Promise<void> {
+  process.stdout.write('\n== SDK SkillsClient verification (faithful profile) ==\n');
+  const skills = new SkillsClient(client);
+  check('SkillsClient sees the extension', skills.supported);
+  check('SkillsClient sees directoryRead', skills.directoryRead);
+
+  // list() throws on any invalid entry.
+  const listing = await skills.list();
+  check('SkillsClient.list accepts every entry', listing.invalid.length === 0, `${listing.skills.length} skills`);
+  const entry = listing.skills.find((s) => Array.isArray(s.resources) && s.resources.length > 1) ?? listing.skills[0];
+  if (!entry) {
+    check('a skill to verify exists', false);
+    return;
+  }
+
+  const got = await skills.get(entry.uri);
+  check('SkillsClient.get returns the listed entry', JSON.stringify(got.skill) === JSON.stringify(entry));
+
+  // read() verifies size + digest, and for SKILL.md the frontmatter against the entry.
+  const manifest = await skills.read(entry);
+  check(`SkillsClient.read verifies SKILL.md (${entry.uri})`, manifest.verified && manifest.frontmatter !== undefined);
+  const supporting = Array.isArray(entry.resources) ? entry.resources.find((r) => r.uri !== entry.uri) : undefined;
+  if (supporting) {
+    const file = await skills.read(entry, supporting.uri);
+    check(`SkillsClient.read verifies a supporting file (${supporting.uri})`, file.verified && file.bytes.byteLength === supporting.size);
+  }
+
+  if (skills.directoryRead) {
+    const dir = await skills.readDirectory(entry.uri.replace(/\/SKILL\.md$/, ''));
+    check('SkillsClient.readDirectory lists SKILL.md', dir.resources.some((r) => r.uri === entry.uri));
+  }
+}
+
+/**
+ * What the SDK host does with the adversarial profile. `list()` walks every page, so the
+ * endless adv-enumeration-exhaustion listing runs into the client's `listMaxPages` bound
+ * before any entry is judged; `get()` validates one entry at a time, so it is called for
+ * every first-page URI and the rule each refused fixture breaks is printed.
+ */
+async function runSkillsClientAdversarial(client: Client): Promise<void> {
+  process.stdout.write('\n== SDK SkillsClient against the adversarial profile ==\n');
+  const skills = new SkillsClient(client);
+  let bounded = '';
+  try {
+    await skills.list();
+  } catch (err) {
+    bounded = (err as Error).message.split('\n')[0];
+  }
+  check('SkillsClient bounds the endless listing', bounded !== '', bounded);
+
+  const page = await skillsList(client);
+  let refused = 0;
+  for (const s of page.skills) {
+    try {
+      await skills.get(s.uri);
+    } catch (err) {
+      refused++;
+      process.stdout.write(`  refused ${s.uri}: ${(err as Error).message.split('\n')[0]}\n`);
+    }
+  }
+  check('SkillsClient.get refuses at least one fixture entry', refused > 0, `${refused} of ${page.skills.length} first-page entries refused`);
 }
 
 async function runAdversarialReport(client: Client): Promise<void> {
@@ -424,10 +519,7 @@ async function runAdversarialReport(client: Client): Promise<void> {
   const escRoot = 'skill://adv-directory-walk-escape';
   if (allUris.some((u) => u.includes('adv-directory-walk-escape'))) {
     try {
-      const dir = await client.request(
-        { method: DIRECTORY_READ_METHOD, params: { uri: escRoot } },
-        DirectoryReadResultSchema,
-      );
+      const dir = await directoryRead(client, escRoot);
       const escapeChild = dir.resources.find((r) => r.uri.includes('/../') || !r.uri.startsWith(`${escRoot}/`));
       check('directory-walk-escape: a listed child escapes the skill subtree', !!escapeChild, escapeChild?.uri);
       if (escapeChild) {
@@ -475,14 +567,11 @@ async function runAdversarialReport(client: Client): Promise<void> {
 
     // The same fixture's directory reads also paginate without end.
     const root = 'skill://adv-enumeration-exhaustion';
-    const dr0 = await client.request({ method: DIRECTORY_READ_METHOD, params: { uri: root } }, DirectoryReadResultSchema);
+    const dr0 = await directoryRead(client, root);
     let dcursor = dr0.nextCursor;
     let dpages = 0;
     while (dcursor && dpages < CAP) {
-      const dn = await client.request(
-        { method: DIRECTORY_READ_METHOD, params: { uri: root, cursor: dcursor } },
-        DirectoryReadResultSchema,
-      );
+      const dn = await directoryRead(client, root, dcursor);
       dcursor = dn.nextCursor;
       dpages++;
     }
@@ -496,12 +585,18 @@ async function runAdversarialReport(client: Client): Promise<void> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  process.stdout.write(`skills-over-mcp smoke client (${args.http ? 'http' : 'stdio'}${args.adversarial ? ', adversarial' : ''})\n`);
+  wire = args.adversarial ? LOOSE_WIRE : STRICT_WIRE;
+  process.stdout.write(
+    `skills-over-mcp smoke client (${args.http ? 'http' : 'stdio'}${args.adversarial ? ', adversarial' : ''}${args.legacy ? ', legacy 2025-11-25' : ''})\n`,
+  );
   const client = await connect(args);
   try {
-    await runCoreChecks(client, args.adversarial);
+    await runCoreChecks(client, args);
     if (args.adversarial) {
       await runAdversarialReport(client);
+      await runSkillsClientAdversarial(client);
+    } else {
+      await runSkillsClientChecks(client);
     }
   } finally {
     await client.close();
